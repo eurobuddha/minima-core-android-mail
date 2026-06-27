@@ -1,4 +1,4 @@
-package org.minimarex.history;
+package org.minimarex.mail;
 
 import org.json.JSONObject;
 

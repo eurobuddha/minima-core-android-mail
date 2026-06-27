@@ -3,15 +3,15 @@ plugins {
 }
 
 android {
-    namespace 'org.minimarex.history'
+    namespace 'org.minimarex.mail'
     compileSdk 36
 
     defaultConfig {
-        applicationId "org.minimarex.history"
+        applicationId "org.minimarex.mail"
         minSdk 28
         targetSdk 35
-        versionCode 201
-        versionName "0.2.1"
+        versionCode 100
+        versionName "0.1.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -39,9 +39,15 @@ dependencies {
     implementation libs.activity
     implementation libs.constraintlayout
 
-    // Transaction list
+    // Message + contact lists
     implementation 'androidx.recyclerview:recyclerview:1.3.2'
 
     // Minima Core IPC client SDK (the only way this app reaches the node)
     implementation files('libs/minimaapi.aar')
+
+    // Client-side end-to-end crypto: X25519 sealed box + Ed25519 (libsodium via Lazysodium).
+    // The minimaCore node has no Maxima, so all encryption/signing happens in-app; the node
+    // only carries the sealed blob in coin state. Keys are derived from the Minima seed.
+    implementation 'com.goterl:lazysodium-android:5.1.0@aar'
+    implementation 'net.java.dev.jna:jna:5.13.0@aar'
 }
