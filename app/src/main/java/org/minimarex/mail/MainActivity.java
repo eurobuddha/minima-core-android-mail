@@ -351,10 +351,10 @@ public class MainActivity extends AppCompatActivity {
         final EditText reply = input("Reply…");
         reply.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         bar.addView(reply);
-        Button send = accentButton("Send");
+        final Button send = accentButton("Send");
         send.setOnClickListener(v -> {
             String text = reply.getText().toString();
-            doSend(otherKey, null, subj, text, () -> { reply.setText(""); refreshTop(buildThread(hashref)); });
+            doSend(send, otherKey, null, subj, text, () -> { reply.setText(""); refreshTop(buildThread(hashref)); });
         });
         bar.addView(send);
         col.addView(bar);
@@ -402,8 +402,8 @@ public class MainActivity extends AppCompatActivity {
         message.setGravity(Gravity.TOP);
         form.addView(message);
 
-        Button send = accentButton("Send");
-        send.setOnClickListener(v -> doSend(to.getText().toString().trim(), prefillName,
+        final Button send = accentButton("Send");
+        send.setOnClickListener(v -> doSend(send, to.getText().toString().trim(), prefillName,
                 subject.getText().toString(), message.getText().toString(),
                 () -> { toast("Sent."); pop(); refreshTop(buildInbox()); }));
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -516,10 +516,16 @@ public class MainActivity extends AppCompatActivity {
 
     // ---- actions ----
 
-    private void doSend(String toKey, String toName, String subject, String message, Runnable onOk) {
+    private void doSend(final Button btn, String toKey, String toName, String subject, String message, Runnable onOk) {
         if (crypto == null) { toast("Still connecting to your node…"); return; }
         if (!CommsIdentity.isValidPublicId(toKey)) { toast("That doesn't look like a valid Mail key."); return; }
         if (message == null || message.trim().isEmpty()) { toast("Message is empty."); return; }
+
+        // Posting a coin includes proof-of-work and can take many seconds on a phone. Disable the button
+        // so repeated taps don't fire the same message several times.
+        final CharSequence orig = btn.getText();
+        btn.setEnabled(false);
+        btn.setText("Sending…");
 
         final MailMessage m = new MailMessage();
         m.frompublickey = myId; m.fromname = myName; m.topublickey = toKey;
@@ -534,11 +540,11 @@ public class MainActivity extends AppCompatActivity {
                 io.execute(() -> {
                     db.insert(m);
                     if (contactName != null && !contactName.isEmpty()) db.addContact(contactName, toKey);
-                    ui.post(onOk);
+                    ui.post(() -> { btn.setEnabled(true); btn.setText(orig); onOk.run(); });
                 });
             }
-            @Override public void onFailed(String message) {
-                ui.post(() -> toast("Send failed: " + message));
+            @Override public void onFailed(String err) {
+                ui.post(() -> { btn.setEnabled(true); btn.setText(orig); toast("Send failed: " + err); });
             }
         });
     }

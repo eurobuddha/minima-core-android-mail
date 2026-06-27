@@ -27,6 +27,7 @@ public final class CommsScanner {
     private final Listener listener;
 
     private boolean running = false;
+    private boolean tracked = false;
     private int depth;
 
     public CommsScanner(NodeApi node, CryptoProvider crypto, CommsDb db, String myId, Listener listener) {
@@ -41,11 +42,19 @@ public final class CommsScanner {
         depth = (chainBlock > 0)
                 ? Math.min(MAX_DEPTH, Math.max(1, chainBlock - scannedTip + 1))
                 : MAX_DEPTH;
-        fetch(chainBlock);
+        if (tracked) { fetch(chainBlock); return; }
+        // The node only indexes/retains coins at a shared address you don't own once it's TRACKED
+        // (this is what ChainMail's `coinnotify action:add` does). Track once per run, then scan.
+        node.cmd("coinnotify action:add address:" + CommsTransport.CHAINMAIL_ADDRESS, new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) { tracked = true; fetch(chainBlock); }
+            @Override public void onError(String m) { fetch(chainBlock); }
+        });
     }
 
     private void fetch(final int chainBlock) {
-        String cmd = "coins relevant:false address:" + CommsTransport.CHAINMAIL_ADDRESS + " depth:" + depth + " order:desc";
+        // NB: NO `relevant:` flag — `coins relevant:false address:X` returns nothing at a shared address;
+        // a bare `coins address:X` (once tracked) returns them.
+        String cmd = "coins address:" + CommsTransport.CHAINMAIL_ADDRESS + " depth:" + depth + " order:desc";
         node.cmd(cmd, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
                 JSONArray coins = j.optJSONArray("response");
