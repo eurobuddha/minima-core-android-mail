@@ -10,6 +10,8 @@
 
     <!-- New-mail notifications (Android 13+ prompts at runtime). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Scan a contact's Mail-key QR. -->
+    <uses-permission android:name="android.permission.CAMERA" />
 
     <application
         android:allowBackup="true"
@@ -23,7 +25,8 @@
         tools:targetApi="31">
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

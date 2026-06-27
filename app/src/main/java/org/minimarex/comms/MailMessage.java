@@ -18,6 +18,8 @@ public class MailMessage {
     public boolean incoming;      // local
     public boolean read;          // local
     public long date;
+    public String status = "";    // outgoing only: "" / "sent" / "confirmed" — local
+    public long sentblock = 0;    // chain block at send time, for the confirmed heuristic — local
 
     /** The sealed payload: only the sender-authored fields travel on-chain. */
     public byte[] toWire() {

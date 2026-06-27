@@ -11,6 +11,10 @@ public final class CommsTransport {
     /** "CHAINMAIL" in hex — the one shared address everyone posts to + monitors (privacy is by encryption). */
     public static final String CHAINMAIL_ADDRESS = "0x434841494E4D41494C";
 
+    /** Minima is feeless, so the only cost is this amount, which is locked (lost) at the shared address.
+     *  1 nano-Minima — effectively free, still a clean valid coin. */
+    public static final String MESSAGE_AMOUNT = "0.000000001";
+
     public interface SendCb {
         void onSent();
         void onFailed(String message);
@@ -27,7 +31,7 @@ public final class CommsTransport {
         try {
             JSONObject state = new JSONObject();
             state.put("99", "0x" + blob);   // hex-typed state value, read back the same way
-            String cmd = "send amount:0.001 address:" + CHAINMAIL_ADDRESS + " tokenid:0x00 state:" + state;
+            String cmd = "send amount:" + MESSAGE_AMOUNT + " address:" + CHAINMAIL_ADDRESS + " tokenid:0x00 state:" + state;
             node.cmd(cmd, new NodeApi.Cb() {
                 @Override public void onResult(JSONObject j) {
                     // status:true = accepted; pending:true = queued via the pending app (node locked)

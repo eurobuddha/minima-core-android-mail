@@ -38,6 +38,11 @@ public final class CommsIdentity {
         return new CommsIdentity(boxPk, boxSk, signPk, signSk);
     }
 
+    /** Reconstruct an identity from raw keys — used when restoring a backup (no seed needed). */
+    public static CommsIdentity fromKeys(byte[] boxPk, byte[] boxSk, byte[] signPk, byte[] signSk) {
+        return new CommsIdentity(boxPk, boxSk, signPk, signSk);
+    }
+
     /** boxPk || signPk, hex with 0x prefix. This is what you publish / add to contacts / show as a QR. */
     public String publicId() { return "0x" + Hex.to(boxPk) + Hex.to(signPk); }
 

@@ -16,7 +16,7 @@ import java.util.List;
 public class CommsDb extends SQLiteOpenHelper {
 
     private static final String DB = "minima_mail.db";
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;   // v2: + status/sentblock on messages
     private static final String MSG = "messages";
     private static final String CON = "contacts";
     private static final String META = "meta";
@@ -29,7 +29,7 @@ public class CommsDb extends SQLiteOpenHelper {
                 "id INTEGER PRIMARY KEY AUTOINCREMENT," +
                 "hashref TEXT NOT NULL, fromname TEXT, frompublickey TEXT, topublickey TEXT," +
                 "subject TEXT, message TEXT, randomid TEXT NOT NULL," +
-                "incoming INTEGER, read INTEGER, date INTEGER," +
+                "incoming INTEGER, read INTEGER, date INTEGER, status TEXT, sentblock INTEGER," +
                 "UNIQUE(hashref, randomid))");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_msg_hashref ON " + MSG + "(hashref)");
         db.execSQL("CREATE TABLE IF NOT EXISTS " + CON + " (" +
@@ -37,7 +37,12 @@ public class CommsDb extends SQLiteOpenHelper {
         db.execSQL("CREATE TABLE IF NOT EXISTS " + META + " (k TEXT PRIMARY KEY, v TEXT)");
     }
 
-    @Override public void onUpgrade(SQLiteDatabase db, int o, int n) { onCreate(db); }
+    @Override public void onUpgrade(SQLiteDatabase db, int o, int n) {
+        onCreate(db);
+        for (String col : new String[]{"status TEXT", "sentblock INTEGER"}) {
+            try { db.execSQL("ALTER TABLE " + MSG + " ADD COLUMN " + col); } catch (Exception ignored) {}
+        }
+    }
 
     // ----- messages -----
 
@@ -48,6 +53,7 @@ public class CommsDb extends SQLiteOpenHelper {
         v.put("frompublickey", m.frompublickey); v.put("topublickey", m.topublickey);
         v.put("subject", m.subject); v.put("message", m.message); v.put("randomid", m.randomid);
         v.put("incoming", m.incoming ? 1 : 0); v.put("read", m.read ? 1 : 0); v.put("date", m.date);
+        v.put("status", m.status); v.put("sentblock", m.sentblock);
         long rid = getWritableDatabase().insertWithOnConflict(MSG, null, v, SQLiteDatabase.CONFLICT_IGNORE);
         return rid != -1;
     }
@@ -55,13 +61,13 @@ public class CommsDb extends SQLiteOpenHelper {
     /** One row per thread = its latest message (SQLite bare-columns picks the MAX(date) row), newest first. */
     public List<MailMessage> threads() {
         return query("SELECT id,hashref,fromname,frompublickey,topublickey,subject,message,randomid," +
-                "incoming,read,MAX(date) AS date FROM " + MSG + " GROUP BY hashref ORDER BY date DESC", null);
+                "incoming,read,MAX(date) AS date,status,sentblock FROM " + MSG + " GROUP BY hashref ORDER BY date DESC", null);
     }
 
     /** All messages in a thread, oldest first (conversation order). */
     public List<MailMessage> thread(String hashref) {
         return query("SELECT id,hashref,fromname,frompublickey,topublickey,subject,message,randomid," +
-                "incoming,read,date FROM " + MSG + " WHERE hashref=? ORDER BY date ASC", new String[]{hashref});
+                "incoming,read,date,status,sentblock FROM " + MSG + " WHERE hashref=? ORDER BY date ASC", new String[]{hashref});
     }
 
     public int unreadCount() {
@@ -78,6 +84,18 @@ public class CommsDb extends SQLiteOpenHelper {
         getWritableDatabase().delete(MSG, "hashref=?", new String[]{hashref});
     }
 
+    public void setStatus(long id, String status) {
+        ContentValues v = new ContentValues(); v.put("status", status);
+        getWritableDatabase().update(MSG, v, "id=?", new String[]{String.valueOf(id)});
+    }
+
+    /** Promote outgoing 'sent' messages to 'confirmed' once the chain has advanced past their send block. */
+    public void markConfirmed(int chainBlock) {
+        if (chainBlock <= 0) return;
+        getWritableDatabase().execSQL("UPDATE " + MSG + " SET status='confirmed' " +
+                "WHERE incoming=0 AND status='sent' AND sentblock>0 AND sentblock<=" + (chainBlock - 1));
+    }
+
     private List<MailMessage> query(String sql, String[] args) {
         List<MailMessage> out = new ArrayList<>();
         Cursor c = getReadableDatabase().rawQuery(sql, args);
@@ -88,6 +106,7 @@ public class CommsDb extends SQLiteOpenHelper {
                 m.frompublickey = c.getString(3); m.topublickey = c.getString(4);
                 m.subject = c.getString(5); m.message = c.getString(6); m.randomid = c.getString(7);
                 m.incoming = c.getInt(8) == 1; m.read = c.getInt(9) == 1; m.date = c.getLong(10);
+                m.status = c.getString(11); if (m.status == null) m.status = ""; m.sentblock = c.getLong(12);
                 out.add(m);
             }
         } finally { c.close(); }
