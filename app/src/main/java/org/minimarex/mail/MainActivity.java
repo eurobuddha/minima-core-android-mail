@@ -107,11 +107,14 @@ public class MainActivity extends AppCompatActivity {
     private final ArrayDeque<View> stack = new ArrayDeque<>();
     private int insetTop = 0, insetBottom = 0;
     private RecyclerView currentMessages;   // for scroll-to-bottom on keyboard
+    private MessagesAdapter convAdapter;    // the open conversation's adapter, for in-place message updates
+    private String convOtherKey;            // the open conversation's contact
 
     private ActivityResultLauncher<String> exportLauncher;
     private ActivityResultLauncher<String[]> importLauncher;
     private ActivityResultLauncher<ScanOptions> scanLauncher;
     private EditText pendingScanTarget;
+    private boolean pendingScanIsAddress;   // true → scan to fill a Minima address field (not a Mail key)
 
     // ---- lifecycle ----
 
@@ -141,7 +144,13 @@ public class MainActivity extends AppCompatActivity {
                 uri -> { if (uri != null) promptBackupPass(uri, false); });
         scanLauncher = registerForActivityResult(new ScanContract(), result -> {
             if (result.getContents() != null && pendingScanTarget != null) {
-                pendingScanTarget.setText(acceptKeyShare(result.getContents()));
+                String s = result.getContents().trim();
+                if (pendingScanIsAddress) {
+                    int bar = s.indexOf('|');                       // a "key|addr" QR → take the address half
+                    pendingScanTarget.setText(bar >= 0 ? s.substring(bar + 1).trim() : s);
+                } else {
+                    pendingScanTarget.setText(acceptKeyShare(s));   // a Mail-key QR → take the key (store the addr)
+                }
             }
         });
 
@@ -320,16 +329,22 @@ public class MainActivity extends AppCompatActivity {
 
     private void requestScan() { if (crypto != null && scanner != null) scanner.scan(chainBlock); }
 
+    /** Reload the open conversation's messages WITHOUT rebuilding the screen (so an open dialog is untouched). */
+    private void reloadConversation(String otherKey) {
+        if (convAdapter == null || convOtherKey == null || !convOtherKey.equals(otherKey)) return;
+        List<MailMessage> msgs = db.thread(MailText.threadKey(myId, otherKey, ""));
+        convAdapter.setData(msgs);
+        if (currentMessages != null && !msgs.isEmpty()) currentMessages.scrollToPosition(msgs.size() - 1);
+    }
+
     private void onScanDone(boolean ok, int newCount) {
         ui.post(() -> {
             if (newCount > 0) {
                 notifyNew(newCount);
-                if (modalOpen) return;   // don't tear down an open dialog (the pay sheet)
                 View top = stack.peek();
-                if (top != null && top.getTag() instanceof String) {
-                    // a conversation is open — refresh it
-                    refreshTop(buildConversation((String) top.getTag()));
-                } else if (stack.size() == 1) {
+                if (top != null && convOtherKey != null && convOtherKey.equals(top.getTag())) {
+                    reloadConversation(convOtherKey);   // in-place — never rebuilds, never disturbs a dialog
+                } else if (stack.size() == 1 && !modalOpen) {
                     refreshTop(buildInbox());
                 }
             }
@@ -581,6 +596,7 @@ public class MainActivity extends AppCompatActivity {
         rv.setClipToPadding(false);
         col.addView(rv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
         currentMessages = rv;
+        convAdapter = adapter; convOtherKey = otherKey;   // enable in-place updates (no screen rebuild)
         if (!msgs.isEmpty()) rv.scrollToPosition(msgs.size() - 1);
 
         // composer
@@ -987,9 +1003,17 @@ public class MainActivity extends AppCompatActivity {
             openPayAddrField = addr; openPayContact = otherKey;   // live-fill when the handshake returns
             TextView hint = new TextView(this);
             hint.setText(known != null ? "Auto-filled from their messages."
-                    : "Auto-fills once they've messaged you. Otherwise paste their address (their wallet → Receive).");
+                    : "Auto-fills when they message you / are online. Or scan their QR, or paste their address.");
             hint.setTextColor(Design.DIM2); hint.setTextSize(11f); hint.setPadding(0, dp(4), 0, 0);
             box.addView(hint);
+            TextView scanAddr = textButton("⧉ Scan their QR for their address");
+            scanAddr.setOnClickListener(v -> startAddrScan(addr));
+            box.addView(scanAddr);
+            if (myPayaddr.isEmpty()) fetchMyPayaddr();
+            TextView mine = new TextView(this);
+            mine.setText("You'll receive at: " + (myPayaddr.isEmpty() ? "(getting your address…)" : shortKey(myPayaddr)));
+            mine.setTextColor(Design.DIM2); mine.setTextSize(10f); mine.setPadding(0, dp(8), 0, 0);
+            box.addView(mine);
             box.addView(label("Note (optional)"));
             final EditText memo = input("What's it for?");
             box.addView(memo);
@@ -1058,8 +1082,7 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onSent() {
                 io.execute(() -> { db.insert(m); ui.post(() -> {
                     toast("Sent " + amountStr + " " + tokenname);
-                    View top = stack.peek();
-                    if (top != null && otherKey.equals(top.getTag())) refreshTop(buildConversation(otherKey));
+                    reloadConversation(otherKey);
                 }); });
             }
             @Override public void onFailed(String err) { ui.post(() -> toast("Funds sent — but the chat receipt failed.")); }
@@ -1103,14 +1126,18 @@ public class MainActivity extends AppCompatActivity {
 
     // ---- QR scan ----
 
-    private void startScan(EditText target) {
+    private void startScan(EditText target) { launchScan(target, false); }
+    private void startAddrScan(EditText target) { launchScan(target, true); }
+
+    private void launchScan(EditText target, boolean isAddress) {
         if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, new String[]{android.Manifest.permission.CAMERA}, 2);
         }
         pendingScanTarget = target;
+        pendingScanIsAddress = isAddress;
         ScanOptions o = new ScanOptions();
         o.setDesiredBarcodeFormats(ScanOptions.QR_CODE);
-        o.setPrompt("Scan a Mail key");
+        o.setPrompt(isAddress ? "Scan their Mail-key QR for their address" : "Scan a Mail key");
         o.setBeepEnabled(false);
         o.setOrientationLocked(false);
         scanLauncher.launch(o);
