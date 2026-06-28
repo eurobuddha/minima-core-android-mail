@@ -611,16 +611,21 @@ public class MainActivity extends AppCompatActivity {
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setBackgroundColor(Design.SURFACE);
         bar.setPadding(dp(10), dp(8), dp(10), dp(8));
-        TextView pay = new TextView(this);
-        pay.setText("＋"); pay.setTextColor(Design.ACCENT); pay.setTextSize(26f); pay.setGravity(Gravity.CENTER);
-        pay.setPadding(dp(2), 0, dp(8), 0);
-        pay.setOnClickListener(v -> showSendFundsSheet(otherKey));
-        bar.addView(pay);
-        TextView pic = new TextView(this);
-        pic.setText("🖼"); pic.setTextSize(20f); pic.setGravity(Gravity.CENTER);
-        pic.setPadding(dp(2), 0, dp(8), 0);
-        pic.setOnClickListener(v -> { imagePickContact = otherKey; imagePicker.launch("image/*"); });
-        bar.addView(pic);
+        TextView attach = new TextView(this);
+        attach.setText("＋"); attach.setTextColor(Design.ACCENT); attach.setTextSize(26f); attach.setGravity(Gravity.CENTER);
+        attach.setPadding(dp(2), 0, dp(4), 0);
+        attach.setOnClickListener(v -> {
+            androidx.appcompat.widget.PopupMenu pm = new androidx.appcompat.widget.PopupMenu(this, attach);
+            pm.getMenu().add(0, 1, 0, "Photo or GIF");
+            pm.getMenu().add(0, 2, 1, "Send funds");
+            pm.setOnMenuItemClickListener(it -> {
+                if (it.getItemId() == 1) { imagePickContact = otherKey; imagePicker.launch("image/*"); }
+                else showSendFundsSheet(otherKey);
+                return true;
+            });
+            pm.show();
+        });
+        bar.addView(attach);
         final EditText box = new EditText(this);
         box.setHint("Message");
         box.setHintTextColor(Design.DIM2);
@@ -632,6 +637,11 @@ public class MainActivity extends AppCompatActivity {
         box.setPadding(dp(16), dp(10), dp(16), dp(10));
         box.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         bar.addView(box);
+        TextView emo = new TextView(this);
+        emo.setText("😊"); emo.setTextSize(22f); emo.setGravity(Gravity.CENTER);
+        emo.setPadding(dp(6), 0, dp(2), 0);
+        emo.setOnClickListener(v -> showEmojiPicker(box));
+        bar.addView(emo, 1);   // after the attach button, before the message box
 
         final TextView send = new TextView(this);
         send.setText("▲");
@@ -1126,6 +1136,23 @@ public class MainActivity extends AppCompatActivity {
         return new AlertDialog.Builder(this).setTitle(title).setMessage(msg).setCancelable(false).create();
     }
 
+    private void showEmojiPicker(final EditText box) {
+        androidx.emoji2.emojipicker.EmojiPickerView picker = new androidx.emoji2.emojipicker.EmojiPickerView(this);
+        picker.setOnEmojiPickedListener(item -> box.append(item.getEmoji()));
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.addView(picker, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(360)));
+        new AlertDialog.Builder(this).setView(wrap).setPositiveButton("Done", null).show();
+    }
+
+    private byte[] readBytes(Uri uri) {
+        try (java.io.InputStream is = getContentResolver().openInputStream(uri);
+             java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+            byte[] buf = new byte[8192]; int n;
+            while ((n = is.read(buf)) > 0) out.write(buf, 0, n);
+            return out.toByteArray();
+        } catch (Exception e) { return null; }
+    }
+
     // ---- images ----
 
     private void sendImage(final String otherKey, final Uri uri) {
@@ -1134,7 +1161,10 @@ public class MainActivity extends AppCompatActivity {
         progress.show();
         io.execute(() -> {
             try {
-                MailMessage m = imageMsg(otherKey, Images.compressToFit(MainActivity.this, uri, 15000));
+                byte[] raw = readBytes(uri);
+                MailMessage m = (raw != null && raw.length <= 16000)
+                        ? imageMsg(otherKey, raw)                                              // keep original (GIF animated, PNG alpha)
+                        : imageMsg(otherKey, Images.compressToFit(MainActivity.this, uri, 15000)); // else shrink to JPEG
                 if (m == null) { ui.post(() -> { safeDismiss(progress); toast("Couldn't read that image."); }); return; }
                 int stateBytes = crypto.seal(otherKey, m.toWire()).length() / 2;
                 if (stateBytes > 47000) {                       // too big once sealed → compress harder
@@ -1165,8 +1195,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private View imageBubble(MailMessage m) {
-        Bitmap bmp = decodeB64(m.image);
-        if (bmp == null) {
+        android.graphics.drawable.Drawable d = decodeImage(m.image);
+        if (d == null) {
             TextView t = new TextView(this);
             t.setText("🖼 image"); t.setTextColor(m.incoming ? Design.TEXT : Design.ON_ACCENT);
             t.setPadding(dp(14), dp(9), dp(14), dp(9));
@@ -1174,7 +1204,8 @@ public class MainActivity extends AppCompatActivity {
             return t;
         }
         ImageView iv = new ImageView(this);
-        iv.setImageBitmap(bmp);
+        iv.setImageDrawable(d);
+        if (d instanceof android.graphics.drawable.AnimatedImageDrawable) ((android.graphics.drawable.AnimatedImageDrawable) d).start();
         iv.setAdjustViewBounds(true);
         iv.setMaxWidth((int) (getResources().getDisplayMetrics().widthPixels * 0.62));
         iv.setMaxHeight(dp(300));
@@ -1185,19 +1216,27 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void showFullImage(String b64) {
-        Bitmap bmp = decodeB64(b64);
-        if (bmp == null) return;
+        android.graphics.drawable.Drawable d = decodeImage(b64);
+        if (d == null) return;
         ImageView iv = new ImageView(this);
-        iv.setImageBitmap(bmp);
+        iv.setImageDrawable(d);
+        if (d instanceof android.graphics.drawable.AnimatedImageDrawable) ((android.graphics.drawable.AnimatedImageDrawable) d).start();
         iv.setAdjustViewBounds(true);
         ScrollView sv = new ScrollView(this); sv.addView(iv);
         new AlertDialog.Builder(this).setView(sv).setPositiveButton("Close", null).show();
     }
 
-    private static Bitmap decodeB64(String b64) {
+    /** Decode a base64 image to a Drawable — animates GIFs, keeps PNG alpha, falls back to a bitmap. */
+    private android.graphics.drawable.Drawable decodeImage(String b64) {
         try {
-            byte[] b = android.util.Base64.decode(b64, android.util.Base64.NO_WRAP);
-            return android.graphics.BitmapFactory.decodeByteArray(b, 0, b.length);
+            byte[] bytes = android.util.Base64.decode(b64, android.util.Base64.NO_WRAP);
+            try {
+                android.graphics.ImageDecoder.Source src = android.graphics.ImageDecoder.createSource(java.nio.ByteBuffer.wrap(bytes));
+                return android.graphics.ImageDecoder.decodeDrawable(src);
+            } catch (Throwable t) {
+                Bitmap b = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                return b != null ? new android.graphics.drawable.BitmapDrawable(getResources(), b) : null;
+            }
         } catch (Exception e) { return null; }
     }
 

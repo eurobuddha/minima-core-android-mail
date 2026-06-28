@@ -10,8 +10,8 @@ android {
         applicationId "org.minimarex.mail"
         minSdk 28
         targetSdk 35
-        versionCode 308
-        versionName "0.3.8"
+        versionCode 309
+        versionName "0.3.9"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -57,4 +57,7 @@ dependencies {
     // QR: generate your key as a QR (core) + scan a contact's key (embedded scanner).
     implementation 'com.google.zxing:core:3.5.3'
     implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
+
+    // Full emoji picker (system-font emoji grid, searchable).
+    implementation 'androidx.emoji2:emoji2-emojipicker:1.5.0'
 }
