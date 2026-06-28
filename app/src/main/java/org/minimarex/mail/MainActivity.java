@@ -91,6 +91,7 @@ public class MainActivity extends AppCompatActivity {
     private CommsScanner scanner;
     private String myId, myName = "", myPayaddr = "";
     private boolean paired = false;
+    private boolean modalOpen = false;   // suppress background screen rebuilds while a dialog is open
     private int chainBlock = 0;
     private final java.util.HashMap<String, Runnable> pendingPay = new java.util.HashMap<>();
     private final java.util.HashSet<String> payaddrAsked = new java.util.HashSet<>();
@@ -138,7 +139,7 @@ public class MainActivity extends AppCompatActivity {
                 uri -> { if (uri != null) promptBackupPass(uri, false); });
         scanLauncher = registerForActivityResult(new ScanContract(), result -> {
             if (result.getContents() != null && pendingScanTarget != null) {
-                pendingScanTarget.setText(result.getContents().trim());
+                pendingScanTarget.setText(acceptKeyShare(result.getContents()));
             }
         });
 
@@ -212,7 +213,7 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onResult(JSONObject j) {
                 JSONObject r = j.optJSONObject("response");
                 if (r != null) {
-                    String a = r.optString("address", "");
+                    String a = r.optString("miniaddress", r.optString("address", ""));   // prefer Mx
                     if (!a.isEmpty()) { myPayaddr = a; db.setMeta("mypayaddr", a); }
                 }
             }
@@ -225,7 +226,7 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onResult(JSONObject j) {
                 JSONObject r = j.optJSONObject("response");
                 if (r != null) try { chainBlock = Integer.parseInt(r.optString("block", "0")); } catch (Exception ignored) {}
-                if (chainBlock > 0) io.execute(() -> { db.markConfirmed(chainBlock); ui.post(() -> { if (stack.size() == 1) refreshTop(buildInbox()); }); });
+                if (chainBlock > 0) io.execute(() -> { db.markConfirmed(chainBlock); ui.post(() -> { if (!modalOpen && stack.size() == 1) refreshTop(buildInbox()); }); });
             }
             @Override public void onError(String m) {}
         });
@@ -276,6 +277,25 @@ public class MainActivity extends AppCompatActivity {
         sendPayaddrReq(otherKey);
     }
 
+    /** What I share as my "Mail key": encryption key + my Mx receiving address, so contacts can pay me. */
+    private String keyShare() {
+        return (myPayaddr == null || myPayaddr.isEmpty()) ? myId : myId + "|" + myPayaddr;
+    }
+
+    /** Accept a shared key that may be "mailkey|payaddr": store the address if present, return the mail key. */
+    private String acceptKeyShare(String shared) {
+        if (shared == null) return "";
+        shared = shared.trim();
+        int bar = shared.indexOf('|');
+        if (bar > 0) {
+            String key = shared.substring(0, bar).trim();
+            String addr = shared.substring(bar + 1).trim();
+            if (CommsIdentity.isValidPublicId(key) && looksLikeMinimaAddress(addr)) db.setContactPayaddr(key, addr);
+            return key;
+        }
+        return shared;
+    }
+
     private void askForSeed() {
         final EditText in = input("Your 24-word Minima seed phrase");
         in.setMinLines(3);
@@ -296,6 +316,7 @@ public class MainActivity extends AppCompatActivity {
         ui.post(() -> {
             if (newCount > 0) {
                 notifyNew(newCount);
+                if (modalOpen) return;   // don't tear down an open dialog (the pay sheet)
                 View top = stack.peek();
                 if (top != null && top.getTag() instanceof String) {
                     // a conversation is open — refresh it
@@ -707,7 +728,7 @@ public class MainActivity extends AppCompatActivity {
 
         TextView start = accentButton("Start chat");
         start.setOnClickListener(v -> {
-            String k = to.getText().toString().trim();
+            String k = acceptKeyShare(to.getText().toString());
             if (!CommsIdentity.isValidPublicId(k)) { toast("That doesn't look like a valid Mail key."); return; }
             pop();
             push(buildConversation(k));
@@ -785,7 +806,7 @@ public class MainActivity extends AppCompatActivity {
         form.addView(saveName);
 
         if (myId != null) {
-            Bitmap qr = QrUtil.qr(myId, dp(200));
+            Bitmap qr = QrUtil.qr(keyShare(), dp(200));
             if (qr != null) {
                 ImageView iv = new ImageView(this);
                 iv.setImageBitmap(qr);
@@ -807,7 +828,7 @@ public class MainActivity extends AppCompatActivity {
         key.setTextColor(Design.TEXT); key.setTextSize(13f); key.setTypeface(Typeface.MONOSPACE);
         form.addView(key);
         TextView copy = accentButton("Copy my key");
-        copy.setOnClickListener(v -> { if (myId != null) { copy(myId, "Mail key"); toast("Copied."); } });
+        copy.setOnClickListener(v -> { if (myId != null) { copy(keyShare(), "Mail key + address"); toast("Copied."); } });
         LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         clp.topMargin = dp(8);
         form.addView(copy, clp);
@@ -958,10 +979,13 @@ public class MainActivity extends AppCompatActivity {
             final EditText memo = input("What's it for?");
             box.addView(memo);
             ScrollView sv = new ScrollView(this); sv.addView(box);
-            new AlertDialog.Builder(this).setTitle("Send funds to " + nameFor(otherKey)).setView(sv)
+            AlertDialog dlg = new AlertDialog.Builder(this).setTitle("Send funds to " + nameFor(otherKey)).setView(sv)
                     .setPositiveButton("Review", (d, w) ->
                             trySendFunds(otherKey, sel[0], sel[1], sel[2], amt.getText().toString().trim(), addr.getText().toString().trim(), memo.getText().toString()))
-                    .setNegativeButton("Cancel", null).show();
+                    .setNegativeButton("Cancel", null).create();
+            dlg.setOnDismissListener(d -> modalOpen = false);
+            modalOpen = true;
+            dlg.show();
         });
     }
 
@@ -1186,7 +1210,7 @@ public class MainActivity extends AppCompatActivity {
         box.addView(label("Mail key")); box.addView(key); box.addView(scan);
         new AlertDialog.Builder(this).setTitle("Add contact").setView(box)
                 .setPositiveButton("Add", (d, w) -> {
-                    String n = name.getText().toString().trim(), k = key.getText().toString().trim();
+                    String n = name.getText().toString().trim(), k = acceptKeyShare(key.getText().toString());
                     if (n.isEmpty() || !CommsIdentity.isValidPublicId(k)) { toast("Enter a name and a valid Mail key."); return; }
                     io.execute(() -> { db.addContact(n, k); ui.post(() -> { View top = stack.peek(); if (top != null && top.getTag() instanceof String) refreshTop(buildConversation(k)); }); });
                 })
