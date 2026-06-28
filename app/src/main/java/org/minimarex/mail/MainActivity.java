@@ -62,6 +62,7 @@ import org.minimarex.comms.CommsScanner;
 import org.minimarex.comms.CommsTransport;
 import org.minimarex.comms.CryptoProvider;
 import org.minimarex.comms.Hex;
+import org.minimarex.comms.Images;
 import org.minimarex.comms.LocalEcCryptoProvider;
 import org.minimarex.comms.MailMessage;
 import org.minimarex.comms.MailText;
@@ -113,6 +114,8 @@ public class MainActivity extends AppCompatActivity {
     private ActivityResultLauncher<String> exportLauncher;
     private ActivityResultLauncher<String[]> importLauncher;
     private ActivityResultLauncher<ScanOptions> scanLauncher;
+    private ActivityResultLauncher<String> imagePicker;
+    private String imagePickContact;
     private EditText pendingScanTarget;
     private boolean pendingScanIsAddress;   // true → scan to fill a Minima address field (not a Mail key)
 
@@ -152,6 +155,9 @@ public class MainActivity extends AppCompatActivity {
                     pendingScanTarget.setText(acceptKeyShare(s));   // a Mail-key QR → take the key (store the addr)
                 }
             }
+        });
+        imagePicker = registerForActivityResult(new ActivityResultContracts.GetContent(), uri -> {
+            if (uri != null && imagePickContact != null) sendImage(imagePickContact, uri);
         });
 
         showInbox();
@@ -439,7 +445,7 @@ public class MainActivity extends AppCompatActivity {
             nm.setMaxLines(1);
             TextView snip = new TextView(MainActivity.this);
             boolean unread = t.incoming && !t.read;
-            snip.setText((t.incoming ? "" : "You: ") + oneLine(t.message));
+            snip.setText((t.incoming ? "" : "You: ") + previewText(t));
             snip.setTextColor(unread ? Design.TEXT : Design.DIM);
             snip.setTextSize(13f); snip.setMaxLines(1);
             mid.addView(nm); mid.addView(snip);
@@ -610,6 +616,11 @@ public class MainActivity extends AppCompatActivity {
         pay.setPadding(dp(2), 0, dp(8), 0);
         pay.setOnClickListener(v -> showSendFundsSheet(otherKey));
         bar.addView(pay);
+        TextView pic = new TextView(this);
+        pic.setText("🖼"); pic.setTextSize(20f); pic.setGravity(Gravity.CENTER);
+        pic.setPadding(dp(2), 0, dp(8), 0);
+        pic.setOnClickListener(v -> { imagePickContact = otherKey; imagePicker.launch("image/*"); });
+        bar.addView(pic);
         final EditText box = new EditText(this);
         box.setHint("Message");
         box.setHintTextColor(Design.DIM2);
@@ -699,7 +710,8 @@ public class MainActivity extends AppCompatActivity {
             rowWrap.setOrientation(LinearLayout.HORIZONTAL);
             rowWrap.setPadding(dp(12), dp(1), dp(12), dp(1));
             rowWrap.setGravity(r.m.incoming ? Gravity.START : Gravity.END);
-            rowWrap.addView("payment".equals(r.m.type) ? paymentBubble(r.m) : textBubble(r.m));
+            rowWrap.addView("image".equals(r.m.type) ? imageBubble(r.m)
+                    : "payment".equals(r.m.type) ? paymentBubble(r.m) : textBubble(r.m));
             v.addView(rowWrap);
 
             if (r.footer) {
@@ -1110,6 +1122,85 @@ public class MainActivity extends AppCompatActivity {
 
     private void safeDismiss(AlertDialog d) { try { if (d != null && d.isShowing()) d.dismiss(); } catch (Exception ignored) {} }
 
+    private AlertDialog progressDialog(String title, String msg) {
+        return new AlertDialog.Builder(this).setTitle(title).setMessage(msg).setCancelable(false).create();
+    }
+
+    // ---- images ----
+
+    private void sendImage(final String otherKey, final Uri uri) {
+        if (crypto == null) { toast("Connect to your node first."); return; }
+        final AlertDialog progress = progressDialog("Sending image", "Compressing + posting to the chain…");
+        progress.show();
+        io.execute(() -> {
+            try {
+                MailMessage m = imageMsg(otherKey, Images.compressToFit(MainActivity.this, uri, 15000));
+                if (m == null) { ui.post(() -> { safeDismiss(progress); toast("Couldn't read that image."); }); return; }
+                int stateBytes = crypto.seal(otherKey, m.toWire()).length() / 2;
+                if (stateBytes > 47000) {                       // too big once sealed → compress harder
+                    MailMessage m2 = imageMsg(otherKey, Images.compressToFit(MainActivity.this, uri, 9000));
+                    if (m2 != null) { m = m2; stateBytes = crypto.seal(otherKey, m.toWire()).length() / 2; }
+                }
+                if (stateBytes > 49000) { ui.post(() -> { safeDismiss(progress); toast("Image too large to send on-chain."); }); return; }
+                final MailMessage msg = m;
+                CommsTransport.send(node, crypto, msg, new CommsTransport.SendCb() {
+                    @Override public void onSent() { io.execute(() -> { db.insert(msg); ui.post(() -> { safeDismiss(progress); reloadConversation(otherKey); }); }); }
+                    @Override public void onFailed(String e) { ui.post(() -> { safeDismiss(progress); toast("Send failed: " + e); }); }
+                });
+            } catch (Throwable t) { ui.post(() -> { safeDismiss(progress); toast("Image send failed."); }); }
+        });
+    }
+
+    private MailMessage imageMsg(String otherKey, byte[] jpeg) {
+        if (jpeg == null) return null;
+        MailMessage m = new MailMessage();
+        m.type = "image";
+        m.image = android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP);
+        m.frompublickey = myId; m.fromname = myName; m.topublickey = otherKey;
+        m.message = ""; m.payaddr = myPayaddr;
+        m.randomid = MailText.randomId(); m.date = System.currentTimeMillis();
+        m.incoming = false; m.read = true; m.status = "sent"; m.sentblock = chainBlock;
+        m.hashref = MailText.threadKey(myId, otherKey, "");
+        return m;
+    }
+
+    private View imageBubble(MailMessage m) {
+        Bitmap bmp = decodeB64(m.image);
+        if (bmp == null) {
+            TextView t = new TextView(this);
+            t.setText("🖼 image"); t.setTextColor(m.incoming ? Design.TEXT : Design.ON_ACCENT);
+            t.setPadding(dp(14), dp(9), dp(14), dp(9));
+            t.setBackground(Design.roundBg(this, m.incoming ? Design.SURFACE2 : Design.ACCENT, 18));
+            return t;
+        }
+        ImageView iv = new ImageView(this);
+        iv.setImageBitmap(bmp);
+        iv.setAdjustViewBounds(true);
+        iv.setMaxWidth((int) (getResources().getDisplayMetrics().widthPixels * 0.62));
+        iv.setMaxHeight(dp(300));
+        iv.setBackground(Design.roundBg(this, m.incoming ? Design.SURFACE2 : Design.ACCENT, 14));
+        int p = dp(3); iv.setPadding(p, p, p, p);
+        iv.setOnClickListener(v -> showFullImage(m.image));
+        return iv;
+    }
+
+    private void showFullImage(String b64) {
+        Bitmap bmp = decodeB64(b64);
+        if (bmp == null) return;
+        ImageView iv = new ImageView(this);
+        iv.setImageBitmap(bmp);
+        iv.setAdjustViewBounds(true);
+        ScrollView sv = new ScrollView(this); sv.addView(iv);
+        new AlertDialog.Builder(this).setView(sv).setPositiveButton("Close", null).show();
+    }
+
+    private static Bitmap decodeB64(String b64) {
+        try {
+            byte[] b = android.util.Base64.decode(b64, android.util.Base64.NO_WRAP);
+            return android.graphics.BitmapFactory.decodeByteArray(b, 0, b.length);
+        } catch (Exception e) { return null; }
+    }
+
     private void sendPayaddrReq(String otherKey) {
         if (crypto == null) return;
         MailMessage r = new MailMessage();
@@ -1415,6 +1506,12 @@ public class MainActivity extends AppCompatActivity {
         String h = key.startsWith("0x") ? key.substring(2) : key;
         if (h.length() <= 14) return key;
         return "0x" + h.substring(0, 8) + "…" + h.substring(h.length() - 6);
+    }
+
+    private String previewText(MailMessage t) {
+        if ("image".equals(t.type)) return "🖼 Photo";
+        if ("payment".equals(t.type)) return "💰 " + t.amount + " " + (t.tokenname == null || t.tokenname.isEmpty() ? "MINIMA" : t.tokenname);
+        return oneLine(t.message);
     }
 
     private static String oneLine(String s) {

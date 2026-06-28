@@ -16,7 +16,7 @@ import java.util.List;
 public class CommsDb extends SQLiteOpenHelper {
 
     private static final String DB = "minima_mail.db";
-    private static final int VERSION = 3;   // v3: + payment fields on messages (payaddr/archived live in meta)
+    private static final int VERSION = 4;   // v4: + image (base64) on messages
     private static final String MSG = "messages";
     private static final String CON = "contacts";
     private static final String META = "meta";
@@ -30,7 +30,7 @@ public class CommsDb extends SQLiteOpenHelper {
                 "hashref TEXT NOT NULL, fromname TEXT, frompublickey TEXT, topublickey TEXT," +
                 "subject TEXT, message TEXT, randomid TEXT NOT NULL," +
                 "incoming INTEGER, read INTEGER, date INTEGER, status TEXT, sentblock INTEGER," +
-                "type TEXT, amount TEXT, tokenid TEXT, tokenname TEXT, txpowid TEXT," +
+                "type TEXT, amount TEXT, tokenid TEXT, tokenname TEXT, txpowid TEXT, image TEXT," +
                 "UNIQUE(hashref, randomid))");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_msg_hashref ON " + MSG + "(hashref)");
         db.execSQL("CREATE TABLE IF NOT EXISTS " + CON + " (" +
@@ -41,7 +41,7 @@ public class CommsDb extends SQLiteOpenHelper {
     @Override public void onUpgrade(SQLiteDatabase db, int o, int n) {
         onCreate(db);
         for (String col : new String[]{"status TEXT", "sentblock INTEGER",
-                "type TEXT", "amount TEXT", "tokenid TEXT", "tokenname TEXT", "txpowid TEXT"}) {
+                "type TEXT", "amount TEXT", "tokenid TEXT", "tokenname TEXT", "txpowid TEXT", "image TEXT"}) {
             try { db.execSQL("ALTER TABLE " + MSG + " ADD COLUMN " + col); } catch (Exception ignored) {}
         }
     }
@@ -57,7 +57,7 @@ public class CommsDb extends SQLiteOpenHelper {
         v.put("incoming", m.incoming ? 1 : 0); v.put("read", m.read ? 1 : 0); v.put("date", m.date);
         v.put("status", m.status); v.put("sentblock", m.sentblock);
         v.put("type", m.type); v.put("amount", m.amount); v.put("tokenid", m.tokenid);
-        v.put("tokenname", m.tokenname); v.put("txpowid", m.txpowid);
+        v.put("tokenname", m.tokenname); v.put("txpowid", m.txpowid); v.put("image", m.image);
         long rid = getWritableDatabase().insertWithOnConflict(MSG, null, v, SQLiteDatabase.CONFLICT_IGNORE);
         return rid != -1;
     }
@@ -65,13 +65,13 @@ public class CommsDb extends SQLiteOpenHelper {
     /** One row per thread = its latest message (SQLite bare-columns picks the MAX(date) row), newest first. */
     public List<MailMessage> threads() {
         return query("SELECT id,hashref,fromname,frompublickey,topublickey,subject,message,randomid," +
-                "incoming,read,MAX(date) AS date,status,sentblock,type,amount,tokenid,tokenname,txpowid FROM " + MSG + " GROUP BY hashref ORDER BY date DESC", null);
+                "incoming,read,MAX(date) AS date,status,sentblock,type,amount,tokenid,tokenname,txpowid,image FROM " + MSG + " GROUP BY hashref ORDER BY date DESC", null);
     }
 
     /** All messages in a thread, oldest first (conversation order). */
     public List<MailMessage> thread(String hashref) {
         return query("SELECT id,hashref,fromname,frompublickey,topublickey,subject,message,randomid," +
-                "incoming,read,date,status,sentblock,type,amount,tokenid,tokenname,txpowid FROM " + MSG + " WHERE hashref=? ORDER BY date ASC", new String[]{hashref});
+                "incoming,read,date,status,sentblock,type,amount,tokenid,tokenname,txpowid,image FROM " + MSG + " WHERE hashref=? ORDER BY date ASC", new String[]{hashref});
     }
 
     public int unreadCount() {
@@ -113,7 +113,7 @@ public class CommsDb extends SQLiteOpenHelper {
                 m.status = c.getString(11); if (m.status == null) m.status = ""; m.sentblock = c.getLong(12);
                 m.type = c.getString(13); if (m.type == null) m.type = "text";
                 m.amount = nz(c.getString(14)); m.tokenid = nz(c.getString(15));
-                m.tokenname = nz(c.getString(16)); m.txpowid = nz(c.getString(17));
+                m.tokenname = nz(c.getString(16)); m.txpowid = nz(c.getString(17)); m.image = nz(c.getString(18));
                 out.add(m);
             }
         } finally { c.close(); }

@@ -22,12 +22,13 @@ public class MailMessage {
     public long sentblock = 0;    // chain block at send time, for the confirmed heuristic — local
 
     // ---- v3: payments + address exchange ----
-    public String type = "text";  // text | payment | payaddr-req | payaddr-reply
+    public String type = "text";  // text | image | payment | payaddr-req | payaddr-reply
     public String payaddr = "";   // sender's Minima receiving address — piggybacked on every message
     public String amount = "";    // payment: decimal string
     public String tokenid = "";   // payment: 0x00 = Minima
     public String tokenname = ""; // payment: display name
     public String txpowid = "";   // payment: the value tx's on-chain id
+    public String image = "";     // image: base64 JPEG (kept small so the sealed coin fits the 64 KB TxPoW)
 
     /** The sealed payload: only the sender-authored fields travel on-chain. */
     public byte[] toWire() {
@@ -46,6 +47,7 @@ public class MailMessage {
                 o.put("amount", amount); o.put("tokenid", tokenid);
                 o.put("tokenname", tokenname); o.put("txpowid", txpowid);
             }
+            if ("image".equals(type)) o.put("image", image == null ? "" : image);
             return o.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
         } catch (Exception e) {
             throw new RuntimeException("toWire failed", e);
@@ -70,6 +72,7 @@ public class MailMessage {
             m.tokenid = o.optString("tokenid", "");
             m.tokenname = o.optString("tokenname", "");
             m.txpowid = o.optString("txpowid", "");
+            m.image = o.optString("image", "");
             return m;
         } catch (Exception e) {
             return null;
