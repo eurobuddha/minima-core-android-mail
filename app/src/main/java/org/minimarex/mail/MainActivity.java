@@ -93,6 +93,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean paired = false;
     private int chainBlock = 0;
     private final java.util.HashMap<String, Runnable> pendingPay = new java.util.HashMap<>();
+    private final java.util.HashSet<String> payaddrAsked = new java.util.HashSet<>();
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final java.util.concurrent.ExecutorService io = java.util.concurrent.Executors.newSingleThreadExecutor();
@@ -264,6 +265,15 @@ public class MainActivity extends AppCompatActivity {
                 ui.post(() -> { Runnable r = pendingPay.remove(publicId); if (r != null) r.run(); });
             }
         });
+        fetchMyPayaddr();   // cache my receiving address NOW, so every message I send carries it
+    }
+
+    /** Fire a one-time address request to a contact we don't have an address for yet (so it's ready by pay time). */
+    private void proactivePayaddr(String otherKey) {
+        if (crypto == null || otherKey == null) return;
+        if (db.contactPayaddr(otherKey) != null) return;
+        if (!payaddrAsked.add(otherKey)) return;   // at most once per contact per session (avoid coin spam)
+        sendPayaddrReq(otherKey);
     }
 
     private void askForSeed() {
@@ -506,6 +516,7 @@ public class MainActivity extends AppCompatActivity {
         final String hashref = MailText.threadKey(myId == null ? "" : myId, otherKey, "");
         LinearLayout col = column();
         col.setTag(otherKey);   // marks this as an open conversation; onScanDone rebuilds it by otherKey
+        proactivePayaddr(otherKey);   // request their receiving address now, so it's ready when you pay
 
         // top bar: back + avatar + name
         LinearLayout head = new LinearLayout(this);
@@ -801,6 +812,18 @@ public class MainActivity extends AppCompatActivity {
         clp.topMargin = dp(8);
         form.addView(copy, clp);
 
+        if (myPayaddr != null && !myPayaddr.isEmpty()) {
+            TextView ral = new TextView(this);
+            ral.setText("Your Minima receiving address (so people can pay you):");
+            ral.setTextColor(Design.DIM); ral.setTextSize(12f); ral.setPadding(0, dp(16), 0, dp(4));
+            form.addView(ral);
+            TextView ra = new TextView(this);
+            ra.setText(shortKey(myPayaddr));
+            ra.setTextColor(Design.TEXT); ra.setTextSize(12f); ra.setTypeface(Typeface.MONOSPACE);
+            ra.setOnClickListener(v -> { copy(myPayaddr, "Receiving address"); toast("Address copied."); });
+            form.addView(ra);
+        }
+
         TextView backup = textButton("Back up identity + messages");
         backup.setOnClickListener(v -> { if (identity == null) toast("Connect to your node first."); else exportLauncher.launch("minima-mail-backup.json"); });
         form.addView(backup);
@@ -901,7 +924,8 @@ public class MainActivity extends AppCompatActivity {
 
     private void showSendFundsSheet(final String otherKey) {
         if (crypto == null) { toast("Connect to your node first."); return; }
-        if (db.contactPayaddr(otherKey) == null) sendPayaddrReq(otherKey);   // prefetch their address
+        final String known = db.contactPayaddr(otherKey);
+        if (known == null) sendPayaddrReq(otherKey);   // try to auto-fetch their address in the background
         loadTokens(tokens -> {
             if (tokens.isEmpty()) { toast("No funds available to send."); return; }
             LinearLayout box = pad(column());
@@ -921,34 +945,51 @@ public class MainActivity extends AppCompatActivity {
             final EditText amt = input("0.0");
             amt.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
             box.addView(amt);
+            box.addView(label("Their Minima receiving address"));
+            final EditText addr = input("0x… / Mx… address");
+            if (known != null) addr.setText(known);
+            box.addView(addr);
+            TextView hint = new TextView(this);
+            hint.setText(known != null ? "Auto-filled from their messages."
+                    : "Auto-fills once they've messaged you. Otherwise paste their address (their wallet → Receive).");
+            hint.setTextColor(Design.DIM2); hint.setTextSize(11f); hint.setPadding(0, dp(4), 0, 0);
+            box.addView(hint);
             box.addView(label("Note (optional)"));
             final EditText memo = input("What's it for?");
             box.addView(memo);
-            new AlertDialog.Builder(this).setTitle("Send funds to " + nameFor(otherKey)).setView(box)
+            ScrollView sv = new ScrollView(this); sv.addView(box);
+            new AlertDialog.Builder(this).setTitle("Send funds to " + nameFor(otherKey)).setView(sv)
                     .setPositiveButton("Review", (d, w) ->
-                            trySendFunds(otherKey, sel[0], sel[1], sel[2], amt.getText().toString().trim(), memo.getText().toString()))
+                            trySendFunds(otherKey, sel[0], sel[1], sel[2], amt.getText().toString().trim(), addr.getText().toString().trim(), memo.getText().toString()))
                     .setNegativeButton("Cancel", null).show();
         });
     }
 
-    private void trySendFunds(String otherKey, String tokenid, String tokenname, String balanceStr, String amountStr, String memo) {
+    private void trySendFunds(String otherKey, String tokenid, String tokenname, String balanceStr, String amountStr, String addr, String memo) {
         if (amountStr.isEmpty()) { toast("Enter an amount."); return; }
         java.math.BigDecimal amount, balance;
         try { amount = new java.math.BigDecimal(amountStr); balance = new java.math.BigDecimal(balanceStr); }
         catch (Exception e) { toast("Invalid amount."); return; }
         if (amount.signum() <= 0) { toast("Enter an amount."); return; }
         if (amount.compareTo(balance) > 0) { toast("Insufficient balance."); return; }
-        final String payaddr = db.contactPayaddr(otherKey);
-        if (payaddr == null) {
-            sendPayaddrReq(otherKey);
-            toast("Getting " + nameFor(otherKey) + "'s address — try again in a moment.");
+        if (!looksLikeMinimaAddress(addr)) {
+            if (db.contactPayaddr(otherKey) == null) sendPayaddrReq(otherKey);
+            toast("Enter " + nameFor(otherKey) + "'s Minima receiving address (0x… or Mx…).");
             return;
         }
+        final String payaddr = addr.trim();
+        db.setContactPayaddr(otherKey, payaddr);   // remember it for next time
         new AlertDialog.Builder(this)
                 .setTitle("Send " + amountStr + " " + tokenname + "?")
-                .setMessage("To " + nameFor(otherKey) + "\n\nThis sends real funds and cannot be undone.")
+                .setMessage("To " + nameFor(otherKey) + "\n" + shortKey(payaddr) + "\n\nThis sends real funds and cannot be undone.")
                 .setPositiveButton("Send", (d, w) -> doPay(otherKey, payaddr, tokenid, tokenname, amountStr, memo))
                 .setNegativeButton("Cancel", null).show();
+    }
+
+    private static boolean looksLikeMinimaAddress(String a) {
+        if (a == null) return false;
+        a = a.trim();
+        return (a.startsWith("0x") && a.length() >= 12) || (a.startsWith("Mx") && a.length() >= 20);
     }
 
     private void doPay(String otherKey, String payaddr, String tokenid, String tokenname, String amountStr, String memo) {
