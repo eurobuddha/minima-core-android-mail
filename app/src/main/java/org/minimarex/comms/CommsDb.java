@@ -16,7 +16,7 @@ import java.util.List;
 public class CommsDb extends SQLiteOpenHelper {
 
     private static final String DB = "minima_mail.db";
-    private static final int VERSION = 2;   // v2: + status/sentblock on messages
+    private static final int VERSION = 3;   // v3: + payment fields on messages (payaddr/archived live in meta)
     private static final String MSG = "messages";
     private static final String CON = "contacts";
     private static final String META = "meta";
@@ -30,6 +30,7 @@ public class CommsDb extends SQLiteOpenHelper {
                 "hashref TEXT NOT NULL, fromname TEXT, frompublickey TEXT, topublickey TEXT," +
                 "subject TEXT, message TEXT, randomid TEXT NOT NULL," +
                 "incoming INTEGER, read INTEGER, date INTEGER, status TEXT, sentblock INTEGER," +
+                "type TEXT, amount TEXT, tokenid TEXT, tokenname TEXT, txpowid TEXT," +
                 "UNIQUE(hashref, randomid))");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_msg_hashref ON " + MSG + "(hashref)");
         db.execSQL("CREATE TABLE IF NOT EXISTS " + CON + " (" +
@@ -39,7 +40,8 @@ public class CommsDb extends SQLiteOpenHelper {
 
     @Override public void onUpgrade(SQLiteDatabase db, int o, int n) {
         onCreate(db);
-        for (String col : new String[]{"status TEXT", "sentblock INTEGER"}) {
+        for (String col : new String[]{"status TEXT", "sentblock INTEGER",
+                "type TEXT", "amount TEXT", "tokenid TEXT", "tokenname TEXT", "txpowid TEXT"}) {
             try { db.execSQL("ALTER TABLE " + MSG + " ADD COLUMN " + col); } catch (Exception ignored) {}
         }
     }
@@ -54,6 +56,8 @@ public class CommsDb extends SQLiteOpenHelper {
         v.put("subject", m.subject); v.put("message", m.message); v.put("randomid", m.randomid);
         v.put("incoming", m.incoming ? 1 : 0); v.put("read", m.read ? 1 : 0); v.put("date", m.date);
         v.put("status", m.status); v.put("sentblock", m.sentblock);
+        v.put("type", m.type); v.put("amount", m.amount); v.put("tokenid", m.tokenid);
+        v.put("tokenname", m.tokenname); v.put("txpowid", m.txpowid);
         long rid = getWritableDatabase().insertWithOnConflict(MSG, null, v, SQLiteDatabase.CONFLICT_IGNORE);
         return rid != -1;
     }
@@ -61,13 +65,13 @@ public class CommsDb extends SQLiteOpenHelper {
     /** One row per thread = its latest message (SQLite bare-columns picks the MAX(date) row), newest first. */
     public List<MailMessage> threads() {
         return query("SELECT id,hashref,fromname,frompublickey,topublickey,subject,message,randomid," +
-                "incoming,read,MAX(date) AS date,status,sentblock FROM " + MSG + " GROUP BY hashref ORDER BY date DESC", null);
+                "incoming,read,MAX(date) AS date,status,sentblock,type,amount,tokenid,tokenname,txpowid FROM " + MSG + " GROUP BY hashref ORDER BY date DESC", null);
     }
 
     /** All messages in a thread, oldest first (conversation order). */
     public List<MailMessage> thread(String hashref) {
         return query("SELECT id,hashref,fromname,frompublickey,topublickey,subject,message,randomid," +
-                "incoming,read,date,status,sentblock FROM " + MSG + " WHERE hashref=? ORDER BY date ASC", new String[]{hashref});
+                "incoming,read,date,status,sentblock,type,amount,tokenid,tokenname,txpowid FROM " + MSG + " WHERE hashref=? ORDER BY date ASC", new String[]{hashref});
     }
 
     public int unreadCount() {
@@ -107,6 +111,9 @@ public class CommsDb extends SQLiteOpenHelper {
                 m.subject = c.getString(5); m.message = c.getString(6); m.randomid = c.getString(7);
                 m.incoming = c.getInt(8) == 1; m.read = c.getInt(9) == 1; m.date = c.getLong(10);
                 m.status = c.getString(11); if (m.status == null) m.status = ""; m.sentblock = c.getLong(12);
+                m.type = c.getString(13); if (m.type == null) m.type = "text";
+                m.amount = nz(c.getString(14)); m.tokenid = nz(c.getString(15));
+                m.tokenname = nz(c.getString(16)); m.txpowid = nz(c.getString(17));
                 out.add(m);
             }
         } finally { c.close(); }
@@ -147,4 +154,22 @@ public class CommsDb extends SQLiteOpenHelper {
         Cursor c = getReadableDatabase().rawQuery("SELECT v FROM " + META + " WHERE k=?", new String[]{k});
         try { return c.moveToFirst() ? c.getString(0) : def; } finally { c.close(); }
     }
+
+    // ----- payaddr + archive (kept in meta; no schema change) -----
+
+    /** Remember a contact's Minima receiving address (piggybacked on their messages). */
+    public void setContactPayaddr(String publickey, String payaddr) {
+        if (payaddr != null && !payaddr.isEmpty()) setMeta("pa:" + publickey, payaddr);
+    }
+    public String contactPayaddr(String publickey) { return getMeta("pa:" + publickey, null); }
+
+    public void setArchived(String hashref, boolean on) { setMeta("arch:" + hashref, on ? "1" : ""); }
+    public java.util.Set<String> archivedSet() {
+        java.util.Set<String> s = new java.util.HashSet<>();
+        Cursor c = getReadableDatabase().rawQuery("SELECT k FROM " + META + " WHERE k LIKE 'arch:%' AND v='1'", null);
+        try { while (c.moveToNext()) s.add(c.getString(0).substring(5)); } finally { c.close(); }
+        return s;
+    }
+
+    private static String nz(String s) { return s == null ? "" : s; }
 }

@@ -41,8 +41,12 @@ import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
+import androidx.recyclerview.widget.ItemTouchHelper;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+
+import android.graphics.Canvas;
+import android.graphics.Paint;
 
 import com.goterl.lazysodium.LazySodium;
 import com.journeyapps.barcodescanner.ScanContract;
@@ -85,9 +89,10 @@ public class MainActivity extends AppCompatActivity {
     private CryptoProvider crypto;
     private CommsIdentity identity;
     private CommsScanner scanner;
-    private String myId, myName = "";
+    private String myId, myName = "", myPayaddr = "";
     private boolean paired = false;
     private int chainBlock = 0;
+    private final java.util.HashMap<String, Runnable> pendingPay = new java.util.HashMap<>();
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final java.util.concurrent.ExecutorService io = java.util.concurrent.Executors.newSingleThreadExecutor();
@@ -111,6 +116,7 @@ public class MainActivity extends AppCompatActivity {
         ls = Sodium.get();
         db = new CommsDb(this);
         myName = db.getMeta("myname", "");
+        myPayaddr = db.getMeta("mypayaddr", "");
 
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -194,8 +200,23 @@ public class MainActivity extends AppCompatActivity {
         pairingBanner.setVisibility(enabled ? View.GONE : View.VISIBLE);
         if (enabled) {
             if (chainBlock == 0) fetchBlock();
+            fetchMyPayaddr();
             if (crypto == null) setupIdentity(); else requestScan();
         }
+    }
+
+    /** Cache my Minima receiving address (piggybacked on outgoing messages so contacts can pay me). */
+    private void fetchMyPayaddr() {
+        node.cmd("getaddress", new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) {
+                JSONObject r = j.optJSONObject("response");
+                if (r != null) {
+                    String a = r.optString("address", "");
+                    if (!a.isEmpty()) { myPayaddr = a; db.setMeta("mypayaddr", a); }
+                }
+            }
+            @Override public void onError(String m) {}
+        });
     }
 
     private void fetchBlock() {
@@ -237,7 +258,12 @@ public class MainActivity extends AppCompatActivity {
         identity = id;
         crypto = new LocalEcCryptoProvider(ls, id);
         myId = id.publicId();
-        scanner = new CommsScanner(node, crypto, db, myId, MainActivity.this::onScanDone);
+        scanner = new CommsScanner(node, crypto, db, myId, new CommsScanner.Listener() {
+            @Override public void onDone(boolean ok, int newCount) { onScanDone(ok, newCount); }
+            @Override public void onContactPayaddrUpdated(String publicId) {
+                ui.post(() -> { Runnable r = pendingPay.remove(publicId); if (r != null) r.run(); });
+            }
+        });
     }
 
     private void askForSeed() {
@@ -292,7 +318,12 @@ public class MainActivity extends AppCompatActivity {
 
         RecyclerView rv = new RecyclerView(this);
         rv.setLayoutManager(new LinearLayoutManager(this));
-        rv.setAdapter(new ChatListAdapter(db.threads()));
+        java.util.Set<String> archived = db.archivedSet();
+        List<MailMessage> threads = new ArrayList<>();
+        for (MailMessage t : db.threads()) if (!archived.contains(t.hashref)) threads.add(t);
+        ChatListAdapter adapter = new ChatListAdapter(threads, false);
+        rv.setAdapter(adapter);
+        attachSwipe(rv, adapter);
         rv.setClipToPadding(false);
         rv.setPadding(0, 0, 0, dp(88));
         col.addView(rv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -319,7 +350,8 @@ public class MainActivity extends AppCompatActivity {
 
     private class ChatListAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         final List<MailMessage> data;
-        ChatListAdapter(List<MailMessage> d) { data = d; }
+        final boolean archivedView;
+        ChatListAdapter(List<MailMessage> d, boolean arch) { data = d; archivedView = arch; }
 
         @NonNull @Override public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup p, int t) {
             LinearLayout row = new LinearLayout(MainActivity.this);
@@ -371,9 +403,94 @@ public class MainActivity extends AppCompatActivity {
             }
             row.addView(right);
             row.setOnClickListener(v -> openConversation(other));
+            row.setOnLongClickListener(v -> { showThreadActions(t, archivedView); return true; });
         }
 
         @Override public int getItemCount() { return data.size(); }
+    }
+
+    // ---- swipe + long-press (archive / delete) ----
+
+    private void attachSwipe(final RecyclerView rv, final ChatListAdapter adapter) {
+        new ItemTouchHelper(new ItemTouchHelper.SimpleCallback(0, ItemTouchHelper.LEFT | ItemTouchHelper.RIGHT) {
+            @Override public boolean onMove(RecyclerView r, RecyclerView.ViewHolder a, RecyclerView.ViewHolder b) { return false; }
+
+            @Override public void onSwiped(RecyclerView.ViewHolder vh, int dir) {
+                int pos = vh.getBindingAdapterPosition();
+                if (pos < 0 || pos >= adapter.data.size()) return;
+                final String hashref = adapter.data.get(pos).hashref;
+                if (dir == ItemTouchHelper.LEFT) {                 // archive / unarchive
+                    io.execute(() -> db.setArchived(hashref, !adapter.archivedView));
+                    adapter.data.remove(pos); adapter.notifyItemRemoved(pos);
+                    toast(adapter.archivedView ? "Unarchived" : "Archived");
+                } else {                                            // delete (confirm; restore row if cancelled)
+                    new AlertDialog.Builder(MainActivity.this).setMessage("Delete this conversation?")
+                            .setPositiveButton("Delete", (d, w) -> { io.execute(() -> db.deleteThread(hashref)); adapter.data.remove(pos); adapter.notifyItemRemoved(pos); })
+                            .setNegativeButton("Cancel", (d, w) -> adapter.notifyItemChanged(pos))
+                            .setOnCancelListener(d -> adapter.notifyItemChanged(pos)).show();
+                }
+            }
+
+            @Override public void onChildDraw(Canvas c, RecyclerView r, RecyclerView.ViewHolder vh, float dX, float dY, int as, boolean active) {
+                View item = vh.itemView;
+                Paint p = new Paint();
+                if (dX > 0) {                                       // swipe right → Delete (red, left)
+                    p.setColor(Design.RED);
+                    c.drawRect(item.getLeft(), item.getTop(), item.getLeft() + dX, item.getBottom(), p);
+                    drawSwipeLabel(c, "Delete", item.getLeft() + dp(24), item.getTop(), item.getBottom(), true);
+                } else if (dX < 0) {                                // swipe left → Archive (orange, right)
+                    p.setColor(Design.ACCENT);
+                    c.drawRect(item.getRight() + dX, item.getTop(), item.getRight(), item.getBottom(), p);
+                    drawSwipeLabel(c, adapter.archivedView ? "Unarchive" : "Archive", item.getRight() - dp(24), item.getTop(), item.getBottom(), false);
+                }
+                super.onChildDraw(c, r, vh, dX, dY, as, active);
+            }
+        }).attachToRecyclerView(rv);
+    }
+
+    private void drawSwipeLabel(Canvas c, String text, float x, int top, int bottom, boolean leftAlign) {
+        Paint tp = new Paint();
+        tp.setColor(0xFFFFFFFF); tp.setTextSize(dp(14)); tp.setAntiAlias(true);
+        tp.setTextAlign(leftAlign ? Paint.Align.LEFT : Paint.Align.RIGHT);
+        float y = top + (bottom - top) / 2f - (tp.descent() + tp.ascent()) / 2f;
+        c.drawText(text, x, y, tp);
+    }
+
+    private void showThreadActions(MailMessage t, final boolean archivedView) {
+        final String hashref = t.hashref;
+        String[] items = {archivedView ? "Unarchive" : "Archive", "Delete"};
+        new AlertDialog.Builder(this).setItems(items, (d, w) -> {
+            if (w == 0) {
+                io.execute(() -> db.setArchived(hashref, !archivedView));
+                toast(archivedView ? "Unarchived" : "Archived");
+                refreshTop(archivedView ? buildArchived() : buildInbox());
+            } else {
+                new AlertDialog.Builder(this).setMessage("Delete this conversation?")
+                        .setPositiveButton("Delete", (dd, ww) -> { io.execute(() -> db.deleteThread(hashref)); refreshTop(archivedView ? buildArchived() : buildInbox()); })
+                        .setNegativeButton("Cancel", null).show();
+            }
+        }).show();
+    }
+
+    private View buildArchived() {
+        LinearLayout col = column();
+        col.addView(header("Archived", true));
+        RecyclerView rv = new RecyclerView(this);
+        rv.setLayoutManager(new LinearLayoutManager(this));
+        java.util.Set<String> archived = db.archivedSet();
+        List<MailMessage> threads = new ArrayList<>();
+        for (MailMessage t : db.threads()) if (archived.contains(t.hashref)) threads.add(t);
+        ChatListAdapter adapter = new ChatListAdapter(threads, true);
+        rv.setAdapter(adapter);
+        attachSwipe(rv, adapter);
+        col.addView(rv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        if (threads.isEmpty()) {
+            TextView e = new TextView(this);
+            e.setText("No archived chats."); e.setTextColor(Design.DIM2); e.setGravity(Gravity.CENTER);
+            e.setPadding(0, dp(64), 0, 0);
+            col.addView(e);
+        }
+        return col;
     }
 
     private void openConversation(String otherKey) {
@@ -426,6 +543,11 @@ public class MainActivity extends AppCompatActivity {
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setBackgroundColor(Design.SURFACE);
         bar.setPadding(dp(10), dp(8), dp(10), dp(8));
+        TextView pay = new TextView(this);
+        pay.setText("＋"); pay.setTextColor(Design.ACCENT); pay.setTextSize(26f); pay.setGravity(Gravity.CENTER);
+        pay.setPadding(dp(2), 0, dp(8), 0);
+        pay.setOnClickListener(v -> showSendFundsSheet(otherKey));
+        bar.addView(pay);
         final EditText box = new EditText(this);
         box.setHint("Message");
         box.setHintTextColor(Design.DIM2);
@@ -514,22 +636,8 @@ public class MainActivity extends AppCompatActivity {
             LinearLayout rowWrap = new LinearLayout(MainActivity.this);
             rowWrap.setOrientation(LinearLayout.HORIZONTAL);
             rowWrap.setPadding(dp(12), dp(1), dp(12), dp(1));
-            TextView bubble = new TextView(MainActivity.this);
-            bubble.setText(r.m.message);
-            bubble.setTextSize(15f);
-            bubble.setPadding(dp(14), dp(9), dp(14), dp(9));
-            bubble.setMaxWidth((int) (getResources().getDisplayMetrics().widthPixels * 0.75));
-            if (r.m.incoming) {
-                bubble.setTextColor(Design.TEXT);
-                bubble.setBackground(Design.roundBg(MainActivity.this, Design.SURFACE2, 18));
-                rowWrap.setGravity(Gravity.START);
-                rowWrap.addView(bubble);
-            } else {
-                bubble.setTextColor(Design.ON_ACCENT);
-                bubble.setBackground(Design.roundBg(MainActivity.this, Design.ACCENT, 18));
-                rowWrap.setGravity(Gravity.END);
-                rowWrap.addView(bubble);
-            }
+            rowWrap.setGravity(r.m.incoming ? Gravity.START : Gravity.END);
+            rowWrap.addView("payment".equals(r.m.type) ? paymentBubble(r.m) : textBubble(r.m));
             v.addView(rowWrap);
 
             if (r.footer) {
@@ -737,6 +845,7 @@ public class MainActivity extends AppCompatActivity {
         m.subject = ""; m.message = message;
         m.randomid = MailText.randomId(); m.date = System.currentTimeMillis();
         m.incoming = false; m.read = true;
+        m.payaddr = myPayaddr;
         m.hashref = MailText.threadKey(myId, toKey, "");
 
         CommsTransport.send(node, crypto, m, new CommsTransport.SendCb() {
@@ -750,6 +859,165 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onFailed(String err) {
                 ui.post(() -> { btn.setEnabled(true); toast("Send failed: " + err); });
             }
+        });
+    }
+
+    // ---- bubbles ----
+
+    private View textBubble(MailMessage m) {
+        TextView b = new TextView(this);
+        b.setText(m.message);
+        b.setTextSize(15f);
+        b.setPadding(dp(14), dp(9), dp(14), dp(9));
+        b.setMaxWidth((int) (getResources().getDisplayMetrics().widthPixels * 0.75));
+        b.setTextColor(m.incoming ? Design.TEXT : Design.ON_ACCENT);
+        b.setBackground(Design.roundBg(this, m.incoming ? Design.SURFACE2 : Design.ACCENT, 18));
+        return b;
+    }
+
+    private View paymentBubble(MailMessage m) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(16), dp(12), dp(16), dp(12));
+        card.setBackground(Design.roundBg(this, m.incoming ? Design.SURFACE2 : Design.ACCENT, 18));
+        int fg = m.incoming ? Design.TEXT : Design.ON_ACCENT;
+        int sub = m.incoming ? Design.DIM : 0xCC000000;
+        TextView head = new TextView(this);
+        head.setText(m.incoming ? ("💰  " + nameFor(m.frompublickey) + " sent you") : "💰  You sent");
+        head.setTextColor(sub); head.setTextSize(11f);
+        TextView amt = new TextView(this);
+        amt.setText(m.amount + "  " + (m.tokenname == null || m.tokenname.isEmpty() ? "MINIMA" : m.tokenname));
+        amt.setTextColor(fg); amt.setTextSize(20f); amt.setTypeface(Typeface.DEFAULT_BOLD);
+        card.addView(head); card.addView(amt);
+        if (m.message != null && !m.message.isEmpty()) {
+            TextView memo = new TextView(this);
+            memo.setText(m.message); memo.setTextColor(fg); memo.setTextSize(13f); memo.setPadding(0, dp(4), 0, 0);
+            card.addView(memo);
+        }
+        return card;
+    }
+
+    // ---- send funds ----
+
+    private void showSendFundsSheet(final String otherKey) {
+        if (crypto == null) { toast("Connect to your node first."); return; }
+        if (db.contactPayaddr(otherKey) == null) sendPayaddrReq(otherKey);   // prefetch their address
+        loadTokens(tokens -> {
+            if (tokens.isEmpty()) { toast("No funds available to send."); return; }
+            LinearLayout box = pad(column());
+            final String[] sel = {tokens.get(0)[0], tokens.get(0)[1], tokens.get(0)[2]};   // tokenid, name, balance
+            box.addView(label("Token"));
+            final TextView tokenBtn = accentOutlineButton(sel[1] + "   ·   balance " + sel[2]);
+            tokenBtn.setOnClickListener(v -> {
+                String[] labels = new String[tokens.size()];
+                for (int i = 0; i < tokens.size(); i++) labels[i] = tokens.get(i)[1] + " — " + tokens.get(i)[2];
+                new AlertDialog.Builder(this).setTitle("Choose token").setItems(labels, (d, w) -> {
+                    sel[0] = tokens.get(w)[0]; sel[1] = tokens.get(w)[1]; sel[2] = tokens.get(w)[2];
+                    tokenBtn.setText(sel[1] + "   ·   balance " + sel[2]);
+                }).show();
+            });
+            box.addView(tokenBtn);
+            box.addView(label("Amount"));
+            final EditText amt = input("0.0");
+            amt.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+            box.addView(amt);
+            box.addView(label("Note (optional)"));
+            final EditText memo = input("What's it for?");
+            box.addView(memo);
+            new AlertDialog.Builder(this).setTitle("Send funds to " + nameFor(otherKey)).setView(box)
+                    .setPositiveButton("Review", (d, w) ->
+                            trySendFunds(otherKey, sel[0], sel[1], sel[2], amt.getText().toString().trim(), memo.getText().toString()))
+                    .setNegativeButton("Cancel", null).show();
+        });
+    }
+
+    private void trySendFunds(String otherKey, String tokenid, String tokenname, String balanceStr, String amountStr, String memo) {
+        if (amountStr.isEmpty()) { toast("Enter an amount."); return; }
+        java.math.BigDecimal amount, balance;
+        try { amount = new java.math.BigDecimal(amountStr); balance = new java.math.BigDecimal(balanceStr); }
+        catch (Exception e) { toast("Invalid amount."); return; }
+        if (amount.signum() <= 0) { toast("Enter an amount."); return; }
+        if (amount.compareTo(balance) > 0) { toast("Insufficient balance."); return; }
+        final String payaddr = db.contactPayaddr(otherKey);
+        if (payaddr == null) {
+            sendPayaddrReq(otherKey);
+            toast("Getting " + nameFor(otherKey) + "'s address — try again in a moment.");
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Send " + amountStr + " " + tokenname + "?")
+                .setMessage("To " + nameFor(otherKey) + "\n\nThis sends real funds and cannot be undone.")
+                .setPositiveButton("Send", (d, w) -> doPay(otherKey, payaddr, tokenid, tokenname, amountStr, memo))
+                .setNegativeButton("Cancel", null).show();
+    }
+
+    private void doPay(String otherKey, String payaddr, String tokenid, String tokenname, String amountStr, String memo) {
+        toast("Sending " + amountStr + " " + tokenname + "…");
+        node.cmd("send amount:" + amountStr + " address:" + payaddr + " tokenid:" + tokenid, new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) {
+                if (!(j.optBoolean("status", false) || j.optBoolean("pending", false))) { toast("Payment failed: " + j.optString("error", "")); return; }
+                JSONObject r = j.optJSONObject("response");
+                String txid = r != null ? r.optString("txpowid", "") : "";
+                sendPaymentReceipt(otherKey, tokenid, tokenname, amountStr, memo, txid);
+            }
+            @Override public void onError(String m) { toast("Payment failed: " + m); }
+        });
+    }
+
+    private void sendPaymentReceipt(final String otherKey, String tokenid, String tokenname, String amountStr, String memo, String txid) {
+        final MailMessage m = new MailMessage();
+        m.type = "payment";
+        m.frompublickey = myId; m.fromname = myName; m.topublickey = otherKey;
+        m.message = memo == null ? "" : memo;
+        m.amount = amountStr; m.tokenid = tokenid; m.tokenname = tokenname; m.txpowid = txid;
+        m.payaddr = myPayaddr;
+        m.randomid = MailText.randomId(); m.date = System.currentTimeMillis();
+        m.incoming = false; m.read = true; m.status = "sent"; m.sentblock = chainBlock;
+        m.hashref = MailText.threadKey(myId, otherKey, "");
+        CommsTransport.send(node, crypto, m, new CommsTransport.SendCb() {
+            @Override public void onSent() {
+                io.execute(() -> { db.insert(m); ui.post(() -> {
+                    toast("Sent " + amountStr + " " + tokenname);
+                    View top = stack.peek();
+                    if (top != null && otherKey.equals(top.getTag())) refreshTop(buildConversation(otherKey));
+                }); });
+            }
+            @Override public void onFailed(String err) { ui.post(() -> toast("Funds sent — but the chat receipt failed.")); }
+        });
+    }
+
+    private void sendPayaddrReq(String otherKey) {
+        if (crypto == null) return;
+        MailMessage r = new MailMessage();
+        r.type = "payaddr-req";
+        r.frompublickey = myId; r.topublickey = otherKey; r.payaddr = myPayaddr;
+        r.message = ""; r.randomid = MailText.randomId(); r.date = System.currentTimeMillis();
+        CommsTransport.send(node, crypto, r, new CommsTransport.SendCb() {
+            @Override public void onSent() {} @Override public void onFailed(String m) {}
+        });
+    }
+
+    private void loadTokens(final java.util.function.Consumer<List<String[]>> cb) {
+        node.cmd("balance", new NodeApi.Cb() {
+            @Override public void onResult(JSONObject j) {
+                List<String[]> out = new ArrayList<>();
+                org.json.JSONArray arr = j.optJSONArray("response");
+                if (arr != null) for (int i = 0; i < arr.length(); i++) {
+                    JSONObject t = arr.optJSONObject(i);
+                    if (t == null) continue;
+                    String tid = t.optString("tokenid", "0x00");
+                    String conf = t.optString("confirmed", "0");
+                    try { if (new java.math.BigDecimal(conf).signum() <= 0) continue; } catch (Exception e) { continue; }
+                    String name;
+                    Object tok = t.opt("token");
+                    if (tok instanceof JSONObject) name = ((JSONObject) tok).optString("name", shortKey(tid));
+                    else name = (tok == null) ? shortKey(tid) : tok.toString();
+                    if ("0x00".equals(tid)) name = "Minima";
+                    out.add(new String[]{tid, name, conf});
+                }
+                cb.accept(out);
+            }
+            @Override public void onError(String m) { cb.accept(new ArrayList<>()); }
         });
     }
 
@@ -851,13 +1119,15 @@ public class MainActivity extends AppCompatActivity {
     private void showMenu(View anchor) {
         androidx.appcompat.widget.PopupMenu m = new androidx.appcompat.widget.PopupMenu(this, anchor);
         m.getMenu().add(0, 1, 0, "Contacts");
-        m.getMenu().add(0, 2, 1, "Your Mail key");
-        m.getMenu().add(0, 3, 2, "Help");
+        m.getMenu().add(0, 4, 1, "Archived");
+        m.getMenu().add(0, 2, 2, "Your Mail key");
+        m.getMenu().add(0, 3, 3, "Help");
         m.setOnMenuItemClickListener(it -> {
             switch (it.getItemId()) {
                 case 1: push(buildContacts()); return true;
                 case 2: push(buildIdentity()); return true;
                 case 3: push(buildHelp()); return true;
+                case 4: push(buildArchived()); return true;
                 default: return false;
             }
         });
@@ -991,6 +1261,16 @@ public class MainActivity extends AppCompatActivity {
         TextView b = new TextView(this);
         b.setText(s); b.setTextColor(Design.ACCENT); b.setTextSize(14f);
         b.setPadding(dp(8), dp(12), dp(16), dp(12));
+        return b;
+    }
+
+    private TextView accentOutlineButton(String s) {
+        TextView b = new TextView(this);
+        b.setText(s); b.setTextColor(Design.ACCENT); b.setTextSize(14f);
+        GradientDrawable d = new GradientDrawable();
+        d.setCornerRadius(dp(10)); d.setStroke(dp(1), Design.ACCENT); d.setColor(0x00000000);
+        b.setBackground(d);
+        b.setPadding(dp(14), dp(10), dp(14), dp(10));
         return b;
     }
 

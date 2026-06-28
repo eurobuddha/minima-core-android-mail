@@ -16,6 +16,7 @@ public final class CommsScanner {
 
     public interface Listener {
         void onDone(boolean ok, int newCount);
+        void onContactPayaddrUpdated(String publicId);
     }
 
     private static final int MAX_DEPTH = 64;   // never scan more than this many blocks in one pass
@@ -38,10 +39,12 @@ public final class CommsScanner {
     public void scan(final int chainBlock) {
         if (running) return;
         running = true;
+        boolean backfill = db.getMeta("backfilled", "").isEmpty();
         int scannedTip = parseInt(db.getMeta("scanned_tip_block", "0"));
-        depth = (chainBlock > 0)
-                ? Math.min(MAX_DEPTH, Math.max(1, chainBlock - scannedTip + 1))
-                : MAX_DEPTH;
+        // Fresh install (never backfilled) → scan ALL coins at the shared address to recover OLD mail (the
+        // identity is seed-derived, so a reinstall decrypts the same history). Then incremental depth-windows.
+        depth = backfill ? 0
+                : (chainBlock > 0 ? Math.min(MAX_DEPTH, Math.max(1, chainBlock - scannedTip + 1)) : MAX_DEPTH);
         if (tracked) { fetch(chainBlock); return; }
         // The node only indexes/retains coins at a shared address you don't own once it's TRACKED
         // (this is what ChainMail's `coinnotify action:add` does). Track once per run, then scan.
@@ -54,12 +57,13 @@ public final class CommsScanner {
     private void fetch(final int chainBlock) {
         // NB: NO `relevant:` flag — `coins relevant:false address:X` returns nothing at a shared address;
         // a bare `coins address:X` (once tracked) returns them.
-        String cmd = "coins address:" + CommsTransport.CHAINMAIL_ADDRESS + " depth:" + depth + " order:desc";
+        String cmd = "coins address:" + CommsTransport.CHAINMAIL_ADDRESS + " order:desc" + (depth > 0 ? " depth:" + depth : "");
         node.cmd(cmd, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
                 JSONArray coins = j.optJSONArray("response");
                 if (coins == null || !j.optBoolean("status", true)) { shrinkOrFail(chainBlock); return; }
                 int got = process(coins);
+                db.setMeta("backfilled", "true");   // the one-time full backfill has run
                 if (chainBlock > 0) db.setMeta("scanned_tip_block", String.valueOf(chainBlock));
                 running = false;
                 listener.onDone(true, got);
@@ -72,7 +76,8 @@ public final class CommsScanner {
     }
 
     private void shrinkOrFail(int chainBlock) {
-        if (depth > 1) { depth = Math.max(1, depth / 2); fetch(chainBlock); }
+        if (depth == 0) { depth = MAX_DEPTH; fetch(chainBlock); }        // full backfill too big → recent window
+        else if (depth > 1) { depth = Math.max(1, depth / 2); fetch(chainBlock); }
         else { running = false; listener.onDone(false, 0); }
     }
 
@@ -90,12 +95,38 @@ public final class CommsScanner {
             if (m == null) continue;
             if (!o.fromPublicId.equals(m.frompublickey)) continue; // signature must match claimed sender
             if (!myId.equals(m.topublickey)) continue;             // addressed to me
+
+            // Every message piggybacks the sender's receiving address — remember it.
+            if (m.payaddr != null && !m.payaddr.isEmpty()) {
+                db.setContactPayaddr(m.frompublickey, m.payaddr);
+                if (listener != null) listener.onContactPayaddrUpdated(m.frompublickey);
+            }
+
+            String type = m.type == null ? "text" : m.type;
+            if ("payaddr-req".equals(type)) { sendPayaddrReply(m.frompublickey); continue; }   // auto-answer
+            if ("payaddr-reply".equals(type)) continue;            // address stored above; not a visible message
+
+            // text or payment → store as a visible message
             m.incoming = true;
             m.read = false;
             m.hashref = MailText.threadKey(m.frompublickey, m.topublickey, m.subject);
             if (db.insert(m)) newCount++;
         }
         return newCount;
+    }
+
+    /** Auto-answer an address request with my receiving address (no UI; not stored as a message). */
+    private void sendPayaddrReply(String toPublicId) {
+        String myPayaddr = db.getMeta("mypayaddr", "");
+        if (myPayaddr.isEmpty()) return;
+        MailMessage r = new MailMessage();
+        r.type = "payaddr-reply";
+        r.frompublickey = myId; r.topublickey = toPublicId; r.payaddr = myPayaddr;
+        r.message = ""; r.randomid = MailText.randomId(); r.date = System.currentTimeMillis();
+        CommsTransport.send(node, crypto, r, new CommsTransport.SendCb() {
+            @Override public void onSent() {}
+            @Override public void onFailed(String m) {}
+        });
     }
 
     /** Coin state may be an array [{port,data}] or an object {"99":...} depending on the node build. */

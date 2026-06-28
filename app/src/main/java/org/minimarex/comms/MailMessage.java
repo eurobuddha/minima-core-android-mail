@@ -21,6 +21,14 @@ public class MailMessage {
     public String status = "";    // outgoing only: "" / "sent" / "confirmed" — local
     public long sentblock = 0;    // chain block at send time, for the confirmed heuristic — local
 
+    // ---- v3: payments + address exchange ----
+    public String type = "text";  // text | payment | payaddr-req | payaddr-reply
+    public String payaddr = "";   // sender's Minima receiving address — piggybacked on every message
+    public String amount = "";    // payment: decimal string
+    public String tokenid = "";   // payment: 0x00 = Minima
+    public String tokenname = ""; // payment: display name
+    public String txpowid = "";   // payment: the value tx's on-chain id
+
     /** The sealed payload: only the sender-authored fields travel on-chain. */
     public byte[] toWire() {
         try {
@@ -32,6 +40,12 @@ public class MailMessage {
             o.put("message", message == null ? "" : message);
             o.put("randomid", randomid);
             o.put("date", date);
+            o.put("type", type == null ? "text" : type);
+            o.put("payaddr", payaddr == null ? "" : payaddr);
+            if ("payment".equals(type)) {
+                o.put("amount", amount); o.put("tokenid", tokenid);
+                o.put("tokenname", tokenname); o.put("txpowid", txpowid);
+            }
             return o.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
         } catch (Exception e) {
             throw new RuntimeException("toWire failed", e);
@@ -50,6 +64,12 @@ public class MailMessage {
             m.message = o.optString("message", "");
             m.randomid = o.optString("randomid", "");
             m.date = o.optLong("date", 0);
+            m.type = o.optString("type", "text");
+            m.payaddr = o.optString("payaddr", "");
+            m.amount = o.optString("amount", "");
+            m.tokenid = o.optString("tokenid", "");
+            m.tokenname = o.optString("tokenname", "");
+            m.txpowid = o.optString("txpowid", "");
             return m;
         } catch (Exception e) {
             return null;
