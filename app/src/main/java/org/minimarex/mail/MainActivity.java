@@ -297,7 +297,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void askForSeed() {
-        final EditText in = input("Your 24-word Minima seed phrase");
+        final EditText in = input("Your Minima seed phrase (any words / format)");
         in.setMinLines(3);
         new AlertDialog.Builder(this)
                 .setTitle("Create your Mail identity")
