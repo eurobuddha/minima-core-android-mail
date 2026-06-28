@@ -95,6 +95,8 @@ public class MainActivity extends AppCompatActivity {
     private int chainBlock = 0;
     private final java.util.HashMap<String, Runnable> pendingPay = new java.util.HashMap<>();
     private final java.util.HashSet<String> payaddrAsked = new java.util.HashSet<>();
+    private EditText openPayAddrField;   // the address field of an open Send-funds sheet (for live fill)
+    private String openPayContact;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final java.util.concurrent.ExecutorService io = java.util.concurrent.Executors.newSingleThreadExecutor();
@@ -263,7 +265,13 @@ public class MainActivity extends AppCompatActivity {
         scanner = new CommsScanner(node, crypto, db, myId, new CommsScanner.Listener() {
             @Override public void onDone(boolean ok, int newCount) { onScanDone(ok, newCount); }
             @Override public void onContactPayaddrUpdated(String publicId) {
-                ui.post(() -> { Runnable r = pendingPay.remove(publicId); if (r != null) r.run(); });
+                ui.post(() -> {
+                    if (openPayAddrField != null && publicId.equals(openPayContact)) {
+                        String a = db.contactPayaddr(publicId);
+                        if (a != null && openPayAddrField.getText().toString().trim().isEmpty()) openPayAddrField.setText(a);
+                    }
+                    Runnable r = pendingPay.remove(publicId); if (r != null) r.run();
+                });
             }
         });
         fetchMyPayaddr();   // cache my receiving address NOW, so every message I send carries it
@@ -337,6 +345,12 @@ public class MainActivity extends AppCompatActivity {
         LinearLayout head = header("Messages", false);
         head.addView(iconBtn("⋮", this::showMenu));
         col.addView(head);
+
+        TextView ver = new TextView(this);
+        ver.setText("Minima Mail v" + BuildConfig.VERSION_NAME);
+        ver.setTextColor(Design.DIM2); ver.setTextSize(10f);
+        ver.setPadding(dp(16), dp(2), dp(16), dp(4));
+        col.addView(ver);
 
         if (crypto == null) {
             TextView s = new TextView(this);
@@ -970,6 +984,7 @@ public class MainActivity extends AppCompatActivity {
             final EditText addr = input("0x… / Mx… address");
             if (known != null) addr.setText(known);
             box.addView(addr);
+            openPayAddrField = addr; openPayContact = otherKey;   // live-fill when the handshake returns
             TextView hint = new TextView(this);
             hint.setText(known != null ? "Auto-filled from their messages."
                     : "Auto-fills once they've messaged you. Otherwise paste their address (their wallet → Receive).");
@@ -983,7 +998,7 @@ public class MainActivity extends AppCompatActivity {
                     .setPositiveButton("Review", (d, w) ->
                             trySendFunds(otherKey, sel[0], sel[1], sel[2], amt.getText().toString().trim(), addr.getText().toString().trim(), memo.getText().toString()))
                     .setNegativeButton("Cancel", null).create();
-            dlg.setOnDismissListener(d -> modalOpen = false);
+            dlg.setOnDismissListener(d -> { modalOpen = false; openPayAddrField = null; openPayContact = null; });
             modalOpen = true;
             dlg.show();
         });
