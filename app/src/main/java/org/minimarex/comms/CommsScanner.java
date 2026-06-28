@@ -3,14 +3,17 @@ package org.minimarex.comms;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.util.HashSet;
+import java.util.Set;
+
 /**
- * Scans the shared ChainMail address for messages addressed to me. There is no MDS callback over the
- * IPC, so this is driven by NEWBLOCK (debounced) instead of `coinnotify`.
+ * Scans the shared ChainMail address for messages addressed to me. NEWBLOCK-driven (no MDS callback).
  *
- * The address is shared + busy, and `coins` can't be offset-paged — so we bound the scan with `depth:`
- * (how many blocks back from the tip). On an over-limit/dropped reply (the node's 256 KB IPC cap) we
- * halve the depth and retry, keeping every request safely small. The local DB de-dupes by
- * (hashref, randomid), so re-scanning overlapping windows never double-inserts.
+ * SAFETY: a large `coins` reply can take the node down (the IPC Binder/256 KB limits), and the ChainMail
+ * address is shared + busy. So this NEVER issues an unbounded query: it always bounds with `depth:`, starts
+ * TINY (depth 4) and only grows while replies come back safely; on an over-limit/dropped reply it probes
+ * smaller. It is also throttled so NEWBLOCK/NEWBALANCE bursts can't hammer the node. The DB de-dupes
+ * messages by (hashref, randomid), so overlapping windows never double-insert.
  */
 public final class CommsScanner {
 
@@ -19,7 +22,9 @@ public final class CommsScanner {
         void onContactPayaddrUpdated(String publicId);
     }
 
-    private static final int MAX_DEPTH = 64;   // never scan more than this many blocks in one pass
+    private static final int START_DEPTH = 4;          // every scan's FIRST query is this small + safe
+    private static final int MAX_DEPTH = 64;           // grow no deeper than this in one pass
+    private static final long MIN_INTERVAL_MS = 4000;  // throttle: don't hammer the node on bursts
 
     private final NodeApi node;
     private final CryptoProvider crypto;
@@ -29,25 +34,27 @@ public final class CommsScanner {
 
     private boolean running = false;
     private boolean tracked = false;
-    private int depth;
+    private boolean backfillRun = false;
+    private boolean grew = false;        // got at least one safe (non-over-limit) page this pass
+    private int depth, targetDepth, newThisRun;
+    private long lastScanEnd = 0;
+    private final Set<String> repliedReqs = new HashSet<>();   // dedup payaddr-reply by request id
+    private final Set<String> seenCoins = new HashSet<>();      // skip re-decrypting overlap while growing
 
     public CommsScanner(NodeApi node, CryptoProvider crypto, CommsDb db, String myId, Listener listener) {
         this.node = node; this.crypto = crypto; this.db = db; this.myId = myId; this.listener = listener;
     }
 
-    /** Scan recent blocks for new messages. Pass the current chain tip (0 if unknown → full MAX_DEPTH). */
     public void scan(final int chainBlock) {
         if (running) return;
-        running = true;
-        boolean backfill = db.getMeta("backfilled", "").isEmpty();
+        if (System.currentTimeMillis() - lastScanEnd < MIN_INTERVAL_MS) return;   // throttle
+        running = true; grew = false; newThisRun = 0; seenCoins.clear();
+        backfillRun = db.getMeta("backfilled", "").isEmpty();
         int scannedTip = parseInt(db.getMeta("scanned_tip_block", "0"));
-        // Fresh install (never backfilled) → scan ALL coins at the shared address to recover OLD mail (the
-        // identity is seed-derived, so a reinstall decrypts the same history). Then incremental depth-windows.
-        depth = backfill ? 0
-                : (chainBlock > 0 ? Math.min(MAX_DEPTH, Math.max(1, chainBlock - scannedTip + 1)) : MAX_DEPTH);
+        int gap = (chainBlock > 0) ? Math.max(1, chainBlock - scannedTip + 1) : MAX_DEPTH;
+        targetDepth = Math.min(MAX_DEPTH, backfillRun ? MAX_DEPTH : gap);
+        depth = Math.min(START_DEPTH, targetDepth);    // ALWAYS start small — never an unbounded query
         if (tracked) { fetch(chainBlock); return; }
-        // The node only indexes/retains coins at a shared address you don't own once it's TRACKED
-        // (this is what ChainMail's `coinnotify action:add` does). Track once per run, then scan.
         node.cmd("coinnotify action:add address:" + CommsTransport.CHAINMAIL_ADDRESS, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) { tracked = true; fetch(chainBlock); }
             @Override public void onError(String m) { fetch(chainBlock); }
@@ -55,67 +62,76 @@ public final class CommsScanner {
     }
 
     private void fetch(final int chainBlock) {
-        // NB: NO `relevant:` flag — `coins relevant:false address:X` returns nothing at a shared address;
-        // a bare `coins address:X` (once tracked) returns them.
-        String cmd = "coins address:" + CommsTransport.CHAINMAIL_ADDRESS + " order:desc" + (depth > 0 ? " depth:" + depth : "");
+        // ALWAYS bounded by depth — never an unbounded `coins` (a huge reply can crash the node).
+        String cmd = "coins address:" + CommsTransport.CHAINMAIL_ADDRESS + " order:desc depth:" + depth;
         node.cmd(cmd, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
                 JSONArray coins = j.optJSONArray("response");
-                if (coins == null || !j.optBoolean("status", true)) { shrinkOrFail(chainBlock); return; }
-                int got = process(coins);
-                db.setMeta("backfilled", "true");   // the one-time full backfill has run
-                if (chainBlock > 0) db.setMeta("scanned_tip_block", String.valueOf(chainBlock));
-                running = false;
-                listener.onDone(true, got);
+                if (coins == null || !j.optBoolean("status", true)) { overLimit(chainBlock); return; }
+                grew = true;
+                newThisRun += process(coins);
+                if (depth < targetDepth) { depth = Math.min(depth * 2, targetDepth); fetch(chainBlock); }  // grow while safe
+                else finish(chainBlock, true);
             }
             @Override public void onError(String message) {
-                if (NodeApi.ERR_NOT_ENABLED.equals(message)) { running = false; listener.onDone(false, 0); return; }
-                shrinkOrFail(chainBlock);   // an oversized window comes back dropped — shrink + retry
+                if (NodeApi.ERR_NOT_ENABLED.equals(message)) { finishFail(); return; }
+                overLimit(chainBlock);
             }
         });
     }
 
-    private void shrinkOrFail(int chainBlock) {
-        if (depth == 0) { depth = MAX_DEPTH; fetch(chainBlock); }        // full backfill too big → recent window
-        else if (depth > 1) { depth = Math.max(1, depth / 2); fetch(chainBlock); }
-        else { running = false; listener.onDone(false, 0); }
+    /** A page came back dropped/refused. Probe smaller if we've not safely read anything yet; else stop. */
+    private void overLimit(int chainBlock) {
+        if (!grew && depth > 1) { depth = Math.max(1, depth / 2); fetch(chainBlock); }
+        else finish(chainBlock, grew);
     }
 
-    /** Try to open every coin's state[99]; keep the ones for me with a valid signature. Returns new count. */
+    private void finish(int chainBlock, boolean ok) {
+        if (ok) db.setMeta("backfilled", "true");
+        if (chainBlock > 0) db.setMeta("scanned_tip_block", String.valueOf(chainBlock));
+        running = false; lastScanEnd = System.currentTimeMillis();
+        listener.onDone(ok, newThisRun);
+    }
+
+    private void finishFail() { running = false; lastScanEnd = System.currentTimeMillis(); listener.onDone(false, 0); }
+
     private int process(JSONArray coins) {
         int newCount = 0;
         for (int i = 0; i < coins.length(); i++) {
             JSONObject coin = coins.optJSONObject(i);
             if (coin == null) continue;
+            String cid = coin.optString("coinid", "");
+            if (!cid.isEmpty() && !seenCoins.add(cid)) continue;   // already handled this run (grow overlap)
             String blob = statePort99(coin);
             if (blob == null) continue;
             Opened o = crypto.open(blob);
-            if (o == null || !o.valid) continue;                 // not for me / bad signature
+            if (o == null || !o.valid) continue;                   // not for me / bad signature
             MailMessage m = MailMessage.fromWire(o.plaintext);
             if (m == null) continue;
             if (!o.fromPublicId.equals(m.frompublickey)) continue; // signature must match claimed sender
             if (!myId.equals(m.topublickey)) continue;             // addressed to me
 
-            // Every message piggybacks the sender's receiving address — remember it.
             if (m.payaddr != null && !m.payaddr.isEmpty()) {
                 db.setContactPayaddr(m.frompublickey, m.payaddr);
                 if (listener != null) listener.onContactPayaddrUpdated(m.frompublickey);
             }
 
             String type = m.type == null ? "text" : m.type;
-            if ("payaddr-req".equals(type)) { sendPayaddrReply(m.frompublickey); continue; }   // auto-answer
+            if ("payaddr-req".equals(type)) {
+                // Auto-reply only on live scans, once per request — never re-reply to old requests during a
+                // backfill (that would flood the node with coins).
+                if (!backfillRun && repliedReqs.add(m.randomid)) sendPayaddrReply(m.frompublickey);
+                continue;
+            }
             if ("payaddr-reply".equals(type)) continue;            // address stored above; not a visible message
 
-            // text or payment → store as a visible message
-            m.incoming = true;
-            m.read = false;
+            m.incoming = true; m.read = false;
             m.hashref = MailText.threadKey(m.frompublickey, m.topublickey, m.subject);
             if (db.insert(m)) newCount++;
         }
         return newCount;
     }
 
-    /** Auto-answer an address request with my receiving address (no UI; not stored as a message). */
     private void sendPayaddrReply(String toPublicId) {
         String myPayaddr = db.getMeta("mypayaddr", "");
         if (myPayaddr.isEmpty()) return;
