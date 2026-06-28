@@ -1137,11 +1137,28 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void showEmojiPicker(final EditText box) {
-        androidx.emoji2.emojipicker.EmojiPickerView picker = new androidx.emoji2.emojipicker.EmojiPickerView(this);
-        picker.setOnEmojiPickedListener(item -> box.append(item.getEmoji()));
+        final List<String> emojis = Emojis.list();
+        RecyclerView rv = new RecyclerView(this);
+        rv.setLayoutManager(new androidx.recyclerview.widget.GridLayoutManager(this, 8));
+        rv.setBackgroundColor(Design.SURFACE);
+        rv.setAdapter(new RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+            @NonNull @Override public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup p, int t) {
+                TextView cell = new TextView(MainActivity.this);
+                cell.setTextSize(24f); cell.setGravity(Gravity.CENTER);
+                int pad = dp(6); cell.setPadding(pad, pad, pad, pad);
+                cell.setLayoutParams(new RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                return new RecyclerView.ViewHolder(cell) {};
+            }
+            @Override public void onBindViewHolder(@NonNull RecyclerView.ViewHolder h, int pos) {
+                final String e = emojis.get(pos);
+                ((TextView) h.itemView).setText(e);
+                h.itemView.setOnClickListener(v -> box.append(e));
+            }
+            @Override public int getItemCount() { return emojis.size(); }
+        });
         LinearLayout wrap = new LinearLayout(this);
-        wrap.addView(picker, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(360)));
-        new AlertDialog.Builder(this).setView(wrap).setPositiveButton("Done", null).show();
+        wrap.addView(rv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(360)));
+        new AlertDialog.Builder(this).setTitle("Emoji").setView(wrap).setPositiveButton("Done", null).show();
     }
 
     private byte[] readBytes(Uri uri) {
