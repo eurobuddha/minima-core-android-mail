@@ -28,9 +28,14 @@ public final class CommsTransport {
             cb.onFailed("encrypt failed: " + e.getMessage());
             return;
         }
+        sendBlob(node, blob, cb);
+    }
+
+    /** Post an already-sealed blob — lets a caller seal once (e.g. to size-check it) and then send it. */
+    public static void sendBlob(NodeApi node, String blobHex, SendCb cb) {
         try {
             JSONObject state = new JSONObject();
-            state.put("99", "0x" + blob);   // hex-typed state value, read back the same way
+            state.put("99", "0x" + blobHex);   // hex-typed state value, read back the same way
             String cmd = "send amount:" + MESSAGE_AMOUNT + " address:" + CHAINMAIL_ADDRESS + " tokenid:0x00 state:" + state;
             node.cmd(cmd, new NodeApi.Cb() {
                 @Override public void onResult(JSONObject j) {

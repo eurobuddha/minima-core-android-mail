@@ -96,6 +96,10 @@ public class MainActivity extends AppCompatActivity {
     private int chainBlock = 0;
     private final java.util.HashMap<String, Runnable> pendingPay = new java.util.HashMap<>();
     private final java.util.HashSet<String> payaddrAsked = new java.util.HashSet<>();
+    private java.util.Map<String, String> contactNames;   // cached publickey→name (avoids a DB query per list row)
+    private final android.util.LruCache<String, Bitmap> imgCache = new android.util.LruCache<String, Bitmap>(12 * 1024 * 1024) {
+        @Override protected int sizeOf(String key, Bitmap b) { return b.getByteCount(); }
+    };
     private EditText openPayAddrField;   // the address field of an open Send-funds sheet (for live fill)
     private String openPayContact;
 
@@ -336,11 +340,18 @@ public class MainActivity extends AppCompatActivity {
     private void requestScan() { if (crypto != null && scanner != null) scanner.scan(chainBlock); }
 
     /** Reload the open conversation's messages WITHOUT rebuilding the screen (so an open dialog is untouched). */
-    private void reloadConversation(String otherKey) {
+    private void reloadConversation(final String otherKey) {
         if (convAdapter == null || convOtherKey == null || !convOtherKey.equals(otherKey)) return;
-        List<MailMessage> msgs = db.thread(MailText.threadKey(myId, otherKey, ""));
-        convAdapter.setData(msgs);
-        if (currentMessages != null && !msgs.isEmpty()) currentMessages.scrollToPosition(msgs.size() - 1);
+        final MessagesAdapter a = convAdapter;
+        final RecyclerView rv = currentMessages;
+        io.execute(() -> {
+            final List<MailMessage> msgs = db.thread(MailText.threadKey(myId, otherKey, ""));
+            ui.post(() -> {
+                if (convAdapter != a) return;   // user navigated away in the meantime
+                a.setData(msgs);
+                if (rv != null && !msgs.isEmpty()) rv.scrollToPosition(msgs.size() - 1);
+            });
+        });
     }
 
     private void onScanDone(boolean ok, int newCount) {
@@ -384,12 +395,15 @@ public class MainActivity extends AppCompatActivity {
 
         RecyclerView rv = new RecyclerView(this);
         rv.setLayoutManager(new LinearLayoutManager(this));
-        java.util.Set<String> archived = db.archivedSet();
-        List<MailMessage> threads = new ArrayList<>();
-        for (MailMessage t : db.threads()) if (!archived.contains(t.hashref)) threads.add(t);
-        ChatListAdapter adapter = new ChatListAdapter(threads, false);
+        final ChatListAdapter adapter = new ChatListAdapter(new ArrayList<>(), false);
         rv.setAdapter(adapter);
         attachSwipe(rv, adapter);
+        io.execute(() -> {                                  // load off the UI thread
+            java.util.Set<String> archived = db.archivedSet();
+            List<MailMessage> threads = new ArrayList<>();
+            for (MailMessage t : db.threads()) if (!archived.contains(t.hashref)) threads.add(t);
+            ui.post(() -> { adapter.data.clear(); adapter.data.addAll(threads); adapter.notifyDataSetChanged(); });
+        });
         rv.setClipToPadding(false);
         rv.setPadding(0, 0, 0, dp(88));
         col.addView(rv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -543,19 +557,23 @@ public class MainActivity extends AppCompatActivity {
         col.addView(header("Archived", true));
         RecyclerView rv = new RecyclerView(this);
         rv.setLayoutManager(new LinearLayoutManager(this));
-        java.util.Set<String> archived = db.archivedSet();
-        List<MailMessage> threads = new ArrayList<>();
-        for (MailMessage t : db.threads()) if (archived.contains(t.hashref)) threads.add(t);
-        ChatListAdapter adapter = new ChatListAdapter(threads, true);
+        final ChatListAdapter adapter = new ChatListAdapter(new ArrayList<>(), true);
         rv.setAdapter(adapter);
         attachSwipe(rv, adapter);
         col.addView(rv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
-        if (threads.isEmpty()) {
-            TextView e = new TextView(this);
-            e.setText("No archived chats."); e.setTextColor(Design.DIM2); e.setGravity(Gravity.CENTER);
-            e.setPadding(0, dp(64), 0, 0);
-            col.addView(e);
-        }
+        final TextView empty = new TextView(this);
+        empty.setText("No archived chats."); empty.setTextColor(Design.DIM2); empty.setGravity(Gravity.CENTER);
+        empty.setPadding(0, dp(64), 0, 0); empty.setVisibility(View.GONE);
+        col.addView(empty);
+        io.execute(() -> {                                  // load off the UI thread
+            java.util.Set<String> archived = db.archivedSet();
+            List<MailMessage> threads = new ArrayList<>();
+            for (MailMessage t : db.threads()) if (archived.contains(t.hashref)) threads.add(t);
+            ui.post(() -> {
+                adapter.data.clear(); adapter.data.addAll(threads); adapter.notifyDataSetChanged();
+                empty.setVisibility(threads.isEmpty() ? View.VISIBLE : View.GONE);
+            });
+        });
         return col;
     }
 
@@ -595,15 +613,17 @@ public class MainActivity extends AppCompatActivity {
         LinearLayoutManager lm = new LinearLayoutManager(this);
         lm.setStackFromEnd(true);
         rv.setLayoutManager(lm);
-        List<MailMessage> msgs = db.thread(hashref);
-        MessagesAdapter adapter = new MessagesAdapter(msgs);
+        final MessagesAdapter adapter = new MessagesAdapter(new ArrayList<>());
         rv.setAdapter(adapter);
         rv.setPadding(0, dp(8), 0, dp(8));
         rv.setClipToPadding(false);
         col.addView(rv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
         currentMessages = rv;
         convAdapter = adapter; convOtherKey = otherKey;   // enable in-place updates (no screen rebuild)
-        if (!msgs.isEmpty()) rv.scrollToPosition(msgs.size() - 1);
+        io.execute(() -> {                                // load messages off the UI thread
+            final List<MailMessage> msgs = db.thread(hashref);
+            ui.post(() -> { adapter.setData(msgs); if (!msgs.isEmpty()) rv.scrollToPosition(msgs.size() - 1); });
+        });
 
         // composer
         LinearLayout bar = new LinearLayout(this);
@@ -827,7 +847,7 @@ public class MainActivity extends AppCompatActivity {
                 row.setOnClickListener(v -> { pop(); push(buildConversation(key)); });
                 row.setOnLongClickListener(v -> {
                     new AlertDialog.Builder(MainActivity.this).setMessage("Delete contact " + name + "?")
-                            .setPositiveButton("Delete", (d, w) -> io.execute(() -> { db.deleteContact(id); ui.post(() -> refreshTop(buildContacts())); }))
+                            .setPositiveButton("Delete", (d, w) -> io.execute(() -> { db.deleteContact(id); ui.post(() -> { contactNames = null; refreshTop(buildContacts()); }); }))
                             .setNegativeButton("Cancel", null).show();
                     return true;
                 });
@@ -1066,15 +1086,22 @@ public class MainActivity extends AppCompatActivity {
         db.setContactPayaddr(otherKey, payaddr);   // remember it for next time
         new AlertDialog.Builder(this)
                 .setTitle("Send " + amountStr + " " + tokenname + "?")
-                .setMessage("To " + nameFor(otherKey) + "\n" + shortKey(payaddr) + "\n\nThis sends real funds and cannot be undone.")
+                .setMessage("To " + nameFor(otherKey) + "\n" + payaddr + "\n\nThis sends real funds and cannot be undone.")
                 .setPositiveButton("Send", (d, w) -> doPay(otherKey, payaddr, tokenid, tokenname, amountStr, memo))
                 .setNegativeButton("Cancel", null).show();
     }
 
+    /** A real Minima receiving address: 0x + exactly 64 hex (32-byte hash), or an Mx… address.
+     *  Crucially this REJECTS a Mail key (0x + 130 hex), which must never be used as a pay address. */
     private static boolean looksLikeMinimaAddress(String a) {
         if (a == null) return false;
         a = a.trim();
-        return (a.startsWith("0x") && a.length() >= 12) || (a.startsWith("Mx") && a.length() >= 20);
+        if (a.startsWith("Mx")) return a.length() >= 40 && a.length() <= 80;
+        if (a.startsWith("0x")) {
+            String h = a.substring(2);
+            return h.length() == 64 && h.matches("[0-9A-Fa-f]+");
+        }
+        return false;
     }
 
     private void doPay(final String otherKey, String payaddr, final String tokenid, final String tokenname, final String amountStr, final String memo) {
@@ -1183,14 +1210,14 @@ public class MainActivity extends AppCompatActivity {
                         ? imageMsg(otherKey, raw)                                              // keep original (GIF animated, PNG alpha)
                         : imageMsg(otherKey, Images.compressToFit(MainActivity.this, uri, 15000)); // else shrink to JPEG
                 if (m == null) { ui.post(() -> { safeDismiss(progress); toast("Couldn't read that image."); }); return; }
-                int stateBytes = crypto.seal(otherKey, m.toWire()).length() / 2;
-                if (stateBytes > 47000) {                       // too big once sealed → compress harder
+                String blob = crypto.seal(otherKey, m.toWire());            // seal ONCE, then size-check + send
+                if (blob.length() / 2 > 47000) {                            // too big once sealed → compress harder
                     MailMessage m2 = imageMsg(otherKey, Images.compressToFit(MainActivity.this, uri, 9000));
-                    if (m2 != null) { m = m2; stateBytes = crypto.seal(otherKey, m.toWire()).length() / 2; }
+                    if (m2 != null) { m = m2; blob = crypto.seal(otherKey, m.toWire()); }
                 }
-                if (stateBytes > 49000) { ui.post(() -> { safeDismiss(progress); toast("Image too large to send on-chain."); }); return; }
+                if (blob.length() / 2 > 49000) { ui.post(() -> { safeDismiss(progress); toast("Image too large to send on-chain."); }); return; }
                 final MailMessage msg = m;
-                CommsTransport.send(node, crypto, msg, new CommsTransport.SendCb() {
+                CommsTransport.sendBlob(node, blob, new CommsTransport.SendCb() {
                     @Override public void onSent() { io.execute(() -> { db.insert(msg); ui.post(() -> { safeDismiss(progress); reloadConversation(otherKey); }); }); }
                     @Override public void onFailed(String e) { ui.post(() -> { safeDismiss(progress); toast("Send failed: " + e); }); }
                 });
@@ -1211,26 +1238,38 @@ public class MainActivity extends AppCompatActivity {
         return m;
     }
 
-    private View imageBubble(MailMessage m) {
-        android.graphics.drawable.Drawable d = decodeImage(m.image);
-        if (d == null) {
-            TextView t = new TextView(this);
-            t.setText("🖼 image"); t.setTextColor(m.incoming ? Design.TEXT : Design.ON_ACCENT);
-            t.setPadding(dp(14), dp(9), dp(14), dp(9));
-            t.setBackground(Design.roundBg(this, m.incoming ? Design.SURFACE2 : Design.ACCENT, 18));
-            return t;
-        }
-        ImageView iv = new ImageView(this);
-        iv.setImageDrawable(d);
-        if (d instanceof android.graphics.drawable.AnimatedImageDrawable) ((android.graphics.drawable.AnimatedImageDrawable) d).start();
+    private View imageBubble(final MailMessage m) {
+        final ImageView iv = new ImageView(this);
         iv.setAdjustViewBounds(true);
         iv.setMaxWidth((int) (getResources().getDisplayMetrics().widthPixels * 0.62));
         iv.setMaxHeight(dp(300));
+        iv.setMinimumWidth(dp(120)); iv.setMinimumHeight(dp(120));
         iv.setBackground(Design.roundBg(this, m.incoming ? Design.SURFACE2 : Design.ACCENT, 14));
         int p = dp(3); iv.setPadding(p, p, p, p);
         iv.setOnClickListener(v -> showFullImage(m.image));
+
+        Bitmap cached = imgCache.get(m.randomid);
+        if (cached != null) { iv.setImageBitmap(cached); return iv; }   // hit → no decode
+
+        io.execute(() -> {                                              // decode off the UI thread
+            try {
+                byte[] bytes = android.util.Base64.decode(m.image, android.util.Base64.NO_WRAP);
+                if (isGif(bytes)) {                                     // animated → decode fresh, don't cache
+                    android.graphics.drawable.Drawable d = decodeImage(m.image);
+                    if (d != null) ui.post(() -> {
+                        iv.setImageDrawable(d);
+                        if (d instanceof android.graphics.drawable.AnimatedImageDrawable) ((android.graphics.drawable.AnimatedImageDrawable) d).start();
+                    });
+                } else {
+                    Bitmap b = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                    if (b != null) { imgCache.put(m.randomid, b); ui.post(() -> iv.setImageBitmap(b)); }
+                }
+            } catch (Exception ignored) {}
+        });
         return iv;
     }
+
+    private static boolean isGif(byte[] b) { return b != null && b.length > 3 && b[0] == 'G' && b[1] == 'I' && b[2] == 'F'; }
 
     private void showFullImage(String b64) {
         android.graphics.drawable.Drawable d = decodeImage(b64);
@@ -1323,7 +1362,7 @@ public class MainActivity extends AppCompatActivity {
                 .setView(p)
                 .setPositiveButton(export ? "Back up" : "Restore", (d, w) -> {
                     String pass = p.getText().toString();
-                    if (pass.length() < 4) { toast("Use a longer passphrase."); return; }
+                    if (pass.length() < 8) { toast("Use a passphrase of at least 8 characters."); return; }
                     if (export) doExport(uri, pass); else doImport(uri, pass);
                 })
                 .setNegativeButton("Cancel", null).show();
@@ -1384,7 +1423,7 @@ public class MainActivity extends AppCompatActivity {
                     m.incoming = o.optBoolean("incoming"); m.read = o.optBoolean("read"); m.date = o.optLong("date"); m.status = o.optString("status", "");
                     db.insert(m);
                 }
-                ui.post(() -> { adoptIdentity(restored); toast("Restored."); showInbox(); requestScan(); });
+                ui.post(() -> { contactNames = null; adoptIdentity(restored); toast("Restored."); showInbox(); requestScan(); });
             } catch (Exception e) { ui.post(() -> toast("Restore failed — wrong passphrase or bad file.")); }
         });
     }
@@ -1422,7 +1461,7 @@ public class MainActivity extends AppCompatActivity {
                 .setPositiveButton("Add", (d, w) -> {
                     String n = name.getText().toString().trim(), k = acceptKeyShare(key.getText().toString());
                     if (n.isEmpty() || !CommsIdentity.isValidPublicId(k)) { toast("Enter a name and a valid Mail key."); return; }
-                    io.execute(() -> { db.addContact(n, k); ui.post(() -> { View top = stack.peek(); if (top != null && top.getTag() instanceof String) refreshTop(buildConversation(k)); }); });
+                    io.execute(() -> { db.addContact(n, k); ui.post(() -> { contactNames = null; View top = stack.peek(); if (top != null && top.getTag() instanceof String) refreshTop(buildConversation(k)); }); });
                 })
                 .setNegativeButton("Cancel", null).show();
     }
@@ -1553,7 +1592,12 @@ public class MainActivity extends AppCompatActivity {
 
     private String nameFor(String key) {
         if (key == null) return "(unknown)";
-        String n = db.contactName(key);
+        if (contactNames == null) {
+            java.util.HashMap<String, String> m = new java.util.HashMap<>();
+            for (String[] c : db.contacts()) m.put(c[2], c[1]);
+            contactNames = m;
+        }
+        String n = contactNames.get(key);
         return n != null ? n : shortKey(key);
     }
 

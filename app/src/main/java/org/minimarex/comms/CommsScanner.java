@@ -119,8 +119,11 @@ public final class CommsScanner {
             String type = m.type == null ? "text" : m.type;
             if ("payaddr-req".equals(type)) {
                 // Auto-reply only on live scans, once per request — never re-reply to old requests during a
-                // backfill (that would flood the node with coins).
-                if (!backfillRun && repliedReqs.add(m.randomid)) sendPayaddrReply(m.frompublickey);
+                // backfill (that would flood the node with coins). Bound the dedup set so it can't grow forever.
+                if (!backfillRun) {
+                    if (repliedReqs.size() >= 1000) repliedReqs.clear();
+                    if (repliedReqs.add(m.randomid)) sendPayaddrReply(m.frompublickey);
+                }
                 continue;
             }
             if ("payaddr-reply".equals(type)) continue;            // address stored above; not a visible message

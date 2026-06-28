@@ -64,8 +64,9 @@ public class CommsDb extends SQLiteOpenHelper {
 
     /** One row per thread = its latest message (SQLite bare-columns picks the MAX(date) row), newest first. */
     public List<MailMessage> threads() {
+        // NB: '' AS image — the list only needs the type for a "🖼 Photo" preview, never the blob itself.
         return query("SELECT id,hashref,fromname,frompublickey,topublickey,subject,message,randomid," +
-                "incoming,read,MAX(date) AS date,status,sentblock,type,amount,tokenid,tokenname,txpowid,image FROM " + MSG + " GROUP BY hashref ORDER BY date DESC", null);
+                "incoming,read,MAX(date) AS date,status,sentblock,type,amount,tokenid,tokenname,txpowid,'' AS image FROM " + MSG + " GROUP BY hashref ORDER BY date DESC", null);
     }
 
     /** All messages in a thread, oldest first (conversation order). */
