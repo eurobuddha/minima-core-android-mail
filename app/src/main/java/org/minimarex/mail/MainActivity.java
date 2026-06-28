@@ -1055,21 +1055,39 @@ public class MainActivity extends AppCompatActivity {
         return (a.startsWith("0x") && a.length() >= 12) || (a.startsWith("Mx") && a.length() >= 20);
     }
 
-    private void doPay(String otherKey, String payaddr, String tokenid, String tokenname, String amountStr, String memo) {
-        toast("Sending " + amountStr + " " + tokenname + "…");
+    private void doPay(final String otherKey, String payaddr, final String tokenid, final String tokenname, final String amountStr, final String memo) {
+        final AlertDialog progress = new AlertDialog.Builder(this)
+                .setTitle("Sending " + amountStr + " " + tokenname)
+                .setMessage("Posting to the chain — this can take a few seconds…")
+                .setCancelable(false).create();
+        progress.show();
         node.cmd("send amount:" + amountStr + " address:" + payaddr + " tokenid:" + tokenid, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
-                if (!(j.optBoolean("status", false) || j.optBoolean("pending", false))) { toast("Payment failed: " + j.optString("error", "")); return; }
+                boolean ok = j.optBoolean("status", false) || j.optBoolean("pending", false);
+                if (!ok) { safeDismiss(progress); payResult(false, "The node rejected the payment.\n" + j.optString("error", ""), null); return; }
                 JSONObject r = j.optJSONObject("response");
-                String txid = r != null ? r.optString("txpowid", "") : "";
-                sendPaymentReceipt(otherKey, tokenid, tokenname, amountStr, memo, txid);
+                final String txid = r != null ? r.optString("txpowid", "") : "";
+                // The funds have left — record it locally (shows the bubble) and confirm, then notify the recipient.
+                final MailMessage m = paymentMsg(otherKey, tokenid, tokenname, amountStr, memo, txid);
+                io.execute(() -> {
+                    db.insert(m);
+                    ui.post(() -> {
+                        safeDismiss(progress);
+                        reloadConversation(otherKey);
+                        payResult(true, "Sent " + amountStr + " " + tokenname + " to " + nameFor(otherKey) + ".", txid);
+                    });
+                });
+                CommsTransport.send(node, crypto, m, new CommsTransport.SendCb() {   // best-effort chat receipt
+                    @Override public void onSent() {}
+                    @Override public void onFailed(String e) {}
+                });
             }
-            @Override public void onError(String m) { toast("Payment failed: " + m); }
+            @Override public void onError(String m) { safeDismiss(progress); payResult(false, "Payment failed: " + m, null); }
         });
     }
 
-    private void sendPaymentReceipt(final String otherKey, String tokenid, String tokenname, String amountStr, String memo, String txid) {
-        final MailMessage m = new MailMessage();
+    private MailMessage paymentMsg(String otherKey, String tokenid, String tokenname, String amountStr, String memo, String txid) {
+        MailMessage m = new MailMessage();
         m.type = "payment";
         m.frompublickey = myId; m.fromname = myName; m.topublickey = otherKey;
         m.message = memo == null ? "" : memo;
@@ -1078,16 +1096,19 @@ public class MainActivity extends AppCompatActivity {
         m.randomid = MailText.randomId(); m.date = System.currentTimeMillis();
         m.incoming = false; m.read = true; m.status = "sent"; m.sentblock = chainBlock;
         m.hashref = MailText.threadKey(myId, otherKey, "");
-        CommsTransport.send(node, crypto, m, new CommsTransport.SendCb() {
-            @Override public void onSent() {
-                io.execute(() -> { db.insert(m); ui.post(() -> {
-                    toast("Sent " + amountStr + " " + tokenname);
-                    reloadConversation(otherKey);
-                }); });
-            }
-            @Override public void onFailed(String err) { ui.post(() -> toast("Funds sent — but the chat receipt failed.")); }
-        });
+        return m;
     }
+
+    private void payResult(boolean ok, String message, String txid) {
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle(ok ? "✓ Payment sent" : "Payment failed")
+                .setMessage(message + (ok && txid != null && !txid.isEmpty() ? "\n\nTx: " + shortKey(txid) : ""))
+                .setPositiveButton("OK", null);
+        if (ok && txid != null && !txid.isEmpty()) b.setNeutralButton("Copy tx id", (d, w) -> { copy(txid, "Tx id"); toast("Copied."); });
+        b.show();
+    }
+
+    private void safeDismiss(AlertDialog d) { try { if (d != null && d.isShowing()) d.dismiss(); } catch (Exception ignored) {} }
 
     private void sendPayaddrReq(String otherKey) {
         if (crypto == null) return;
