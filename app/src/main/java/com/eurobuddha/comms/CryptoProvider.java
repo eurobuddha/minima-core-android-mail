@@ -1,4 +1,4 @@
-package org.minimarex.comms;
+package com.eurobuddha.comms;
 
 /**
  * The pluggable crypto layer. Everything above it (transport, scanner, DB, UI) is identical regardless

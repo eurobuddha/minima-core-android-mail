@@ -1,4 +1,4 @@
-package org.minimarex.comms;
+package com.eurobuddha.comms;
 
 import org.json.JSONObject;
 

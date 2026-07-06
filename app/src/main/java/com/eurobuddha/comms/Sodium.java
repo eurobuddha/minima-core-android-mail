@@ -1,4 +1,4 @@
-package org.minimarex.comms;
+package com.eurobuddha.comms;
 
 import com.goterl.lazysodium.LazySodium;
 import com.goterl.lazysodium.LazySodiumAndroid;

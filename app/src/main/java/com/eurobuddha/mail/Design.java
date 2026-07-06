@@ -1,4 +1,4 @@
-package org.minimarex.mail;
+package com.eurobuddha.mail;
 
 import android.content.Context;
 import android.graphics.drawable.GradientDrawable;

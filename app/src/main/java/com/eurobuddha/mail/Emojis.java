@@ -1,4 +1,4 @@
-package org.minimarex.mail;
+package com.eurobuddha.mail;
 
 import java.util.Arrays;
 import java.util.List;

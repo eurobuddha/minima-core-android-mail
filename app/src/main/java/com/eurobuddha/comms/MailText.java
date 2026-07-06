@@ -1,4 +1,4 @@
-package org.minimarex.comms;
+package com.eurobuddha.comms;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;

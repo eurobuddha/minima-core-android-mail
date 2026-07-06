@@ -1,4 +1,4 @@
-package org.minimarex.mail;
+package com.eurobuddha.mail;
 
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -54,21 +54,21 @@ import com.journeyapps.barcodescanner.ScanOptions;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
-import org.minimarex.comms.Avatars;
-import org.minimarex.comms.BackupCrypto;
-import org.minimarex.comms.CommsDb;
-import org.minimarex.comms.CommsIdentity;
-import org.minimarex.comms.CommsScanner;
-import org.minimarex.comms.CommsTransport;
-import org.minimarex.comms.CryptoProvider;
-import org.minimarex.comms.Hex;
-import org.minimarex.comms.Images;
-import org.minimarex.comms.LocalEcCryptoProvider;
-import org.minimarex.comms.MailMessage;
-import org.minimarex.comms.MailText;
-import org.minimarex.comms.NodeApi;
-import org.minimarex.comms.QrUtil;
-import org.minimarex.comms.Sodium;
+import com.eurobuddha.comms.Avatars;
+import com.eurobuddha.comms.BackupCrypto;
+import com.eurobuddha.comms.CommsDb;
+import com.eurobuddha.comms.CommsIdentity;
+import com.eurobuddha.comms.CommsScanner;
+import com.eurobuddha.comms.CommsTransport;
+import com.eurobuddha.comms.CryptoProvider;
+import com.eurobuddha.comms.Hex;
+import com.eurobuddha.comms.Images;
+import com.eurobuddha.comms.LocalEcCryptoProvider;
+import com.eurobuddha.comms.MailMessage;
+import com.eurobuddha.comms.MailText;
+import com.eurobuddha.comms.NodeApi;
+import com.eurobuddha.comms.QrUtil;
+import com.eurobuddha.comms.Sodium;
 import org.minimarex.minimaapi.MinimaAPIMessages;
 
 import java.io.BufferedReader;

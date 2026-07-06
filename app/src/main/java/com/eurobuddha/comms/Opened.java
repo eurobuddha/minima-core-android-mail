@@ -1,4 +1,4 @@
-package org.minimarex.comms;
+package com.eurobuddha.comms;
 
 /** Result of {@link CryptoProvider#open}: the decrypted message plus whether the sender signature verified. */
 public final class Opened {

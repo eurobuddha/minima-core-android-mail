@@ -1,4 +1,4 @@
-package org.minimarex.comms;
+package com.eurobuddha.comms;
 
 /** Minimal, dependency-free hex codec. Accepts an optional 0x/0X prefix on decode. */
 public final class Hex {

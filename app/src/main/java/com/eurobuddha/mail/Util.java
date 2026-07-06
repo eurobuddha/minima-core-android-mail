@@ -1,4 +1,4 @@
-package org.minimarex.mail;
+package com.eurobuddha.mail;
 
 import org.json.JSONObject;
 
