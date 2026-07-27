@@ -1,47 +1,49 @@
-# Minima History (native Android)
+# Minima Mail (native Android)
 
-A **node-only, persistent** transaction-history app for [Minima](https://minima.global). It mirrors the
-local node's `history` into a **permanent local database** and shows it as a searchable list.
-
-**Why:** the Minima node **prunes** its own history over time. This app captures it and **keeps it
-forever** — a transaction stays in the local record even after the node drops it. The node forgets; this
-app remembers.
-
-It is **read-only** (never builds transactions) and **100% explorer-free** — every byte comes from the
-local node over the broadcast-Intent IPC (`minimaapi`). No internet permission.
+A native Android **on-chain encrypted messenger** for [Minima](https://minima.global) — a faithful clone of the
+ChainMail MiniDapp. The Minima node is a **dumb transport**: there is no Maxima, no MDS, no server. Every message is
+a tiny coin on the chain carrying an end-to-end-encrypted blob, so only the recipient can read it. Package
+`com.eurobuddha.mail`.
 
 ## How it works
 
-- **Sync** = `history relevant:true max:25 offset:N`, paged newest-first into a SQLite DB keyed by
-  `txpowid` (idempotent). It stops at the first already-stored txpow (caught up) or a short page (end of
-  what the node retains); first run pages gently to the end (one-time backfill).
-- **IPC-safe by design:** `history` is the heavy command that can overwhelm an un-hardened node, so sync
-  is bounded (`max:25` ≈190 KB/page), incremental, debounced on `NEWBLOCK`, with a delay between pages —
-  never an unbounded loop.
-- **Direction + amount** come from the node's `details.difference` (net per-token effect): positive →
-  received, negative → sent, zero → self.
-- **The list is served from the local DB** — instant, offline, searchable. The node is touched only to sync.
+- **Identity** is derived **once** from the node seed (`vault action:seed`) via HKDF-SHA256 into an **X25519** box
+  keypair (encryption) + an **Ed25519** signing keypair — your `publicId` is `0x` + the two public keys. It's cached
+  locally and re-derived only on a seed restore; the raw seed is never stored.
+- **Sending** posts a `0.000000001` MINIMA coin to the shared sentinel address **`0x434841494E4D41494C`**
+  ("CHAINMAIL") with the message sealed (`crypto_box_seal`) into coin **state port 99**.
+- **Receiving** scans the CHAINMAIL address (`coins address:…`) and **trial-decrypts** each blob with your box key —
+  only your own messages open. Sender authenticity is Ed25519-signed.
 
-## Scope
+Because everything is on-chain and seed-derived, the **same identity and inbox appear on any device** running Minima
+Mail against a node restored from the same seed, and it **interoperates with the desktop minimaMail module** (same
+wire types + sentinel + crypto).
 
-Relevant transactions only (`history relevant:true`): the wallet's default 64 addresses, any new
-addresses, and contract transactions it's involved in. Captures the node's current retained history at
-install + everything forward (history pruned *before* first sync is unrecoverable — node-only, no explorer).
+## Features
+
+- **Chats & contacts** — threaded conversations, rename a chat/contact, delete, **archive** (+ Archived view).
+- **Message types** — text, images, and **in-chat payments** (with a payaddr request/reply handshake so you can send
+  funds to a contact's own receive address, confirmed and irreversible).
+- **QR** — scan a `publicId` to add a contact (webcam/BarcodeDetector, no external lib), or show yours to be added.
+- **Backup / restore** — passphrase-encrypted backup (PBKDF2-HMAC-SHA256 + AES-256-GCM), byte-compatible with the
+  desktop module so a backup cross-restores.
+- OS notifications, day grouping, copyable receiving address.
 
 ## Build
+
 Requires a **JDK 17/21** (the Android Studio JBR works):
 
 ```sh
-JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug
+JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleRelease
 ```
 
-Install, then enable **Minima History** in Minima Core → Apps to authorize the IPC.
+Install, then enable **Minima Mail** in Minima Core → Apps to authorize the IPC (needed to read/derive the seed and
+post the transport coins).
 
 ## Releases
-Versioned APKs + changelog: **[eurobuddha/minima-core-apks](https://github.com/eurobuddha/minima-core-apks)**
-(tags `minima-history-v<version>`).
 
-## Layout
-- `org/minimarex/history/` — `MainActivity` (list + search + detail), `HistoryDb` (persistent txpowid-keyed
-  SQLite), `HistoryEntry` (parser), `HistorySync` (bounded paged sync), `HistoryDesign`; reused `NodeApi`
-  (IPC), `TokenMeta`, `Util`.
+Versioned APKs are published to the [PandaApps catalog](https://github.com/eurobuddha/minima-core-apks)
+(`apks.json`). Current: **v0.4.0**.
+
+The reusable crypto/transport layer lives in `com/eurobuddha/comms/` (`CommsIdentity`, sealed-box send/scan) and is
+shared, byte-for-byte, with the other native apps and the desktop minimaMail module.
