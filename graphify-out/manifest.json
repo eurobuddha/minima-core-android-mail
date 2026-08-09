@@ -1,8 +1,8 @@
 {
   "app/build.gradle": {
-    "mtime": 1783342302.7140875,
-    "ast_hash": "549379a68d02e71fb77f924d497c2d01",
-    "semantic_hash": "549379a68d02e71fb77f924d497c2d01"
+    "mtime": 1786235648.3810852,
+    "ast_hash": "a6c60f28ea1de1923b218bf46ae4bbb3",
+    "semantic_hash": ""
   },
   "app/src/main/java/com/eurobuddha/comms/Avatars.java": {
     "mtime": 1783342301.9336793,
@@ -123,5 +123,45 @@
     "mtime": 1782570429.6774356,
     "ast_hash": "d0461a438d70bce9fc09ac142bfd2c81",
     "semantic_hash": "d0461a438d70bce9fc09ac142bfd2c81"
+  },
+  "CLAUDE.md": {
+    "mtime": 1784124679.0609565,
+    "ast_hash": "4439d09bc81851d89f9ffcecc4136dcf",
+    "semantic_hash": ""
+  },
+  "DESIGN_MAP.md": {
+    "mtime": 1785155255.79277,
+    "ast_hash": "ab8b106057132274522a53fb2452a711",
+    "semantic_hash": ""
+  },
+  "README.md": {
+    "mtime": 1785155231.9812613,
+    "ast_hash": "516a72db8cd60fecb5e4bfe263d8bffc",
+    "semantic_hash": ""
+  },
+  "app/src/main/res/mipmap-hdpi/ic_launcher_foreground.png": {
+    "mtime": 1782571892.0337758,
+    "ast_hash": "2a913fadbc1c977498ee29d9f71805fc",
+    "semantic_hash": ""
+  },
+  "app/src/main/res/mipmap-mdpi/ic_launcher_foreground.png": {
+    "mtime": 1782571892.0176873,
+    "ast_hash": "e74aa2aeb1e62ca0ba79a76251aeb223",
+    "semantic_hash": ""
+  },
+  "app/src/main/res/mipmap-xhdpi/ic_launcher_foreground.png": {
+    "mtime": 1782571892.050801,
+    "ast_hash": "f507945585274d88ea05517f412e8589",
+    "semantic_hash": ""
+  },
+  "app/src/main/res/mipmap-xxhdpi/ic_launcher_foreground.png": {
+    "mtime": 1782571892.0675046,
+    "ast_hash": "7b74ce77941fb7bf1d5b95b4f796f3a1",
+    "semantic_hash": ""
+  },
+  "app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png": {
+    "mtime": 1782571892.0844731,
+    "ast_hash": "2557ed329bac345981b1b0fb4ff4667d",
+    "semantic_hash": ""
   }
 }

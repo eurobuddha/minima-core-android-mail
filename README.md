@@ -43,7 +43,7 @@ post the transport coins).
 ## Releases
 
 Versioned APKs are published to the [PandaApps catalog](https://github.com/eurobuddha/minima-core-apks)
-(`apks.json`). Current: **v0.4.0**.
+(`apks.json`). Current: **v0.4.1**.
 
 The reusable crypto/transport layer lives in `com/eurobuddha/comms/` (`CommsIdentity`, sealed-box send/scan) and is
 shared, byte-for-byte, with the other native apps and the desktop minimaMail module.
