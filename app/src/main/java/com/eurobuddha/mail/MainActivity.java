@@ -1746,12 +1746,15 @@ public class MainActivity extends AppCompatActivity {
                 .setNegativeButton("Cancel", null).show();
     }
 
-    /** A real Minima receiving address: 0x + exactly 64 hex (32-byte hash), or an Mx… address.
-     *  Crucially this REJECTS a Mail key (0x + 130 hex), which must never be used as a pay address. */
+    /** A real Minima receiving address: Mx… (strict alphanumeric charset, total length 40–80) or 0x +
+     *  exactly 64 hex. CRUCIALLY rejects a Mail key (0x + 130 hex) so an identity key can never be a
+     *  pay address, AND enforces the Mx charset — a whitespace-tolerant length-only check let a crafted
+     *  "Mx… address:0x&lt;attacker&gt;" pass and, once interpolated into `send … address:&lt;x&gt; …`, the node's
+     *  space-tokenised last-wins parser redirected the funds. (Mirrors the desktop module's validator.) */
     private static boolean looksLikeMinimaAddress(String a) {
         if (a == null) return false;
         a = a.trim();
-        if (a.startsWith("Mx")) return a.length() >= 40 && a.length() <= 80;
+        if (a.matches("^Mx[0-9A-Za-z]+$")) return a.length() >= 40 && a.length() <= 80;
         if (a.startsWith("0x")) {
             String h = a.substring(2);
             return h.length() == 64 && h.matches("[0-9A-Fa-f]+");
@@ -1759,11 +1762,33 @@ public class MainActivity extends AppCompatActivity {
         return false;
     }
 
-    private void doPay(final String otherKey, final String subject, String payaddr, final String tokenid, final String tokenname, final String amountStr, final String memo) {
+    private void doPay(final String otherKey, final String subject, final String payaddr, final String tokenid, final String tokenname, final String amountStr, final String memo) {
         final AlertDialog progress = progressDialog("Sending " + amountStr + " " + tokenname,
                 "Posting to the chain — this can take a few seconds…");
         progress.show();
-        node.cmd("send amount:" + amountStr + " address:" + payaddr + " tokenid:" + tokenid, new NodeApi.Cb() {
+        // Defense-in-depth beyond the charset validator: have the node parse/verify the address before any
+        // funds move (same gate as the desktop module). Blocks a charset-valid-but-not-real address.
+        node.cmd("checkaddress address:" + payaddr, new NodeApi.Cb() {
+            @Override public void onResult(JSONObject chk) {
+                if (!chk.optBoolean("status", false)) {
+                    safeDismiss(progress);
+                    payResult(false, "Couldn't validate the recipient address — not sending.", null);
+                    return;
+                }
+                doPayChecked(otherKey, subject, payaddr, tokenid, tokenname, amountStr, memo, progress);
+            }
+            @Override public void onError(String m) {
+                safeDismiss(progress);
+                payResult(false, "Couldn't validate the recipient address — not sending.\n" + m, null);
+            }
+        });
+    }
+
+    private void doPayChecked(final String otherKey, final String subject, String payaddr, final String tokenid, final String tokenname, final String amountStr, final String memo, final AlertDialog progress) {
+        // Pinned to a signable coin (SendPin) so shared-node beacon dust can't fail the send after signing starts.
+        com.eurobuddha.comms.SendPin.pin(node,
+                "send amount:" + amountStr + " address:" + payaddr + " tokenid:" + tokenid,
+                pinned -> node.cmd(pinned, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
                 boolean ok = j.optBoolean("status", false) || j.optBoolean("pending", false);
                 if (!ok) { safeDismiss(progress); payResult(false, "The node rejected the payment.\n" + j.optString("error", ""), null); return; }
@@ -1785,7 +1810,7 @@ public class MainActivity extends AppCompatActivity {
                 });
             }
             @Override public void onError(String m) { safeDismiss(progress); payResult(false, "Payment failed: " + m, null); }
-        });
+        }));
     }
 
     private MailMessage paymentMsg(String otherKey, String subject, String tokenid, String tokenname, String amountStr, String memo, String txid) {

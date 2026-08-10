@@ -1,7 +1,7 @@
 {
   "app/build.gradle": {
-    "mtime": 1786324512.3281028,
-    "ast_hash": "f467ec42d330ac4ab18e6766abf57e64",
+    "mtime": 1786235648.3810852,
+    "ast_hash": "a6c60f28ea1de1923b218bf46ae4bbb3",
     "semantic_hash": ""
   },
   "app/src/main/java/com/eurobuddha/comms/Avatars.java": {
@@ -15,9 +15,9 @@
     "semantic_hash": "f990ec6e8293278bf6b5a20765e090a0"
   },
   "app/src/main/java/com/eurobuddha/comms/CommsDb.java": {
-    "mtime": 1786324013.4363925,
-    "ast_hash": "ec38c310ab2ab162a82d1b3d3d5fbcf7",
-    "semantic_hash": ""
+    "mtime": 1783342301.9368503,
+    "ast_hash": "d287b21cb79b1883a9dfb8118a5e5478",
+    "semantic_hash": "d287b21cb79b1883a9dfb8118a5e5478"
   },
   "app/src/main/java/com/eurobuddha/comms/CommsIdentity.java": {
     "mtime": 1783342301.9327316,
@@ -25,9 +25,9 @@
     "semantic_hash": "59e00f216904db23612c2947d1f5bdc3"
   },
   "app/src/main/java/com/eurobuddha/comms/CommsScanner.java": {
-    "mtime": 1786324018.4458063,
-    "ast_hash": "13948d9fdda038663ad07225ba1442d0",
-    "semantic_hash": ""
+    "mtime": 1783342301.9315834,
+    "ast_hash": "e057ef3418d4d317461fc886f4df078c",
+    "semantic_hash": "e057ef3418d4d317461fc886f4df078c"
   },
   "app/src/main/java/com/eurobuddha/comms/CommsTransport.java": {
     "mtime": 1783342301.9377115,
@@ -90,14 +90,19 @@
     "semantic_hash": "6400264019f0bec3881fe6918254993f"
   },
   "app/src/main/java/com/eurobuddha/mail/Design.java": {
-    "mtime": 1786323994.279106,
-    "ast_hash": "f440f8f656865901f024d93194b821b1",
-    "semantic_hash": ""
+    "mtime": 1783342301.9291484,
+    "ast_hash": "418794f6c8240b9d29a703e9eb625af5",
+    "semantic_hash": "418794f6c8240b9d29a703e9eb625af5"
+  },
+  "app/src/main/java/com/eurobuddha/mail/Emojis.java": {
+    "mtime": 1783342301.9301386,
+    "ast_hash": "4ace14ac35d0435246b17a1df6a76d23",
+    "semantic_hash": "4ace14ac35d0435246b17a1df6a76d23"
   },
   "app/src/main/java/com/eurobuddha/mail/MainActivity.java": {
-    "mtime": 1786324821.3753977,
-    "ast_hash": "d89deb5972850dae2bc8cb39e13f885b",
-    "semantic_hash": ""
+    "mtime": 1783342301.9312148,
+    "ast_hash": "47868dced56403691e4423502755777c",
+    "semantic_hash": "47868dced56403691e4423502755777c"
   },
   "app/src/main/java/com/eurobuddha/mail/Util.java": {
     "mtime": 1783342301.929664,
@@ -125,13 +130,13 @@
     "semantic_hash": ""
   },
   "DESIGN_MAP.md": {
-    "mtime": 1786324546.2809775,
-    "ast_hash": "abdb4e4b98198a80ef66d6ded8ed5045",
+    "mtime": 1785155255.79277,
+    "ast_hash": "ab8b106057132274522a53fb2452a711",
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1786324528.8732007,
-    "ast_hash": "aed97e56001643be3c4b77c960f85fe5",
+    "mtime": 1786315187.4139116,
+    "ast_hash": "b757497d2c8fc99f57727c713c741d2c",
     "semantic_hash": ""
   },
   "app/src/main/res/mipmap-hdpi/ic_launcher_foreground.png": {

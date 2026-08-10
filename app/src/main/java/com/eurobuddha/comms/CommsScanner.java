@@ -32,6 +32,11 @@ public final class CommsScanner {
     private final String myId;
     private final Listener listener;
 
+    // Auto-reply rate limits (mirrors the desktop module): a flood of forged payaddr-reqs must not be
+    // able to drain coins / WOTS key-uses — each reply is a real signed send.
+    private static final int AUTO_REPLY_MAX_PER_HOUR = 24;
+    private static final long AUTO_REPLY_PEER_COOLDOWN_MS = 10 * 60 * 1000;
+
     private boolean running = false;
     private boolean tracked = false;
     private boolean backfillRun = false;
@@ -39,6 +44,8 @@ public final class CommsScanner {
     private int depth, targetDepth, newThisRun;
     private long lastScanEnd = 0;
     private final Set<String> repliedReqs = new HashSet<>();   // dedup payaddr-reply by request id
+    private final java.util.Map<String, Long> paReplyCooldown = new java.util.HashMap<>();  // per-peer last reply
+    private final java.util.List<Long> autoReplyTimes = new java.util.ArrayList<>();        // global hourly window
     private final Set<String> seenCoins = new HashSet<>();      // skip re-decrypting overlap while growing
 
     public CommsScanner(NodeApi node, CryptoProvider crypto, CommsDb db, String myId, Listener listener) {
@@ -122,10 +129,21 @@ public final class CommsScanner {
             String type = m.type == null ? "text" : m.type;
             if ("payaddr-req".equals(type)) {
                 // Auto-reply only on live scans, once per request — never re-reply to old requests during a
-                // backfill (that would flood the node with coins). Bound the dedup set so it can't grow forever.
+                // backfill (that would flood the node with coins). Beyond the per-request dedup, HARD
+                // rate-limit (per-peer cooldown + global hourly cap): an attacker can mint fresh randomids
+                // at will, and every auto-reply burns a coin and a WOTS key-use.
                 if (!backfillRun) {
-                    if (repliedReqs.size() >= 1000) repliedReqs.clear();
-                    if (repliedReqs.add(m.randomid)) sendPayaddrReply(m.frompublickey);
+                    if (repliedReqs.size() >= 2000) repliedReqs.clear();
+                    if (repliedReqs.add(m.randomid)) {
+                        long now = System.currentTimeMillis();
+                        autoReplyTimes.removeIf(t -> now - t >= 3600000);
+                        long last = paReplyCooldown.containsKey(m.frompublickey) ? paReplyCooldown.get(m.frompublickey) : 0;
+                        if (autoReplyTimes.size() < AUTO_REPLY_MAX_PER_HOUR && now - last > AUTO_REPLY_PEER_COOLDOWN_MS) {
+                            autoReplyTimes.add(now);
+                            paReplyCooldown.put(m.frompublickey, now);
+                            sendPayaddrReply(m.frompublickey);
+                        }
+                    }
                 }
                 continue;
             }

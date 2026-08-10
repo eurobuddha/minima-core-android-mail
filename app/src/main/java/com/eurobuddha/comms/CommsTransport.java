@@ -31,20 +31,22 @@ public final class CommsTransport {
         sendBlob(node, blob, cb);
     }
 
-    /** Post an already-sealed blob — lets a caller seal once (e.g. to size-check it) and then send it. */
+    /** Post an already-sealed blob — lets a caller seal once (e.g. to size-check it) and then send it.
+     *  The send is pinned to a signable wallet coin ({@link SendPin}) so shared-node beacon dust can't
+     *  be selected and NPE the signer — a failed send still burns a WOTS key-use for nothing. */
     public static void sendBlob(NodeApi node, String blobHex, SendCb cb) {
         try {
             JSONObject state = new JSONObject();
             state.put("99", "0x" + blobHex);   // hex-typed state value, read back the same way
             String cmd = "send amount:" + MESSAGE_AMOUNT + " address:" + CHAINMAIL_ADDRESS + " tokenid:0x00 state:" + state;
-            node.cmd(cmd, new NodeApi.Cb() {
+            SendPin.pin(node, cmd, pinned -> node.cmd(pinned, new NodeApi.Cb() {
                 @Override public void onResult(JSONObject j) {
                     // status:true = accepted; pending:true = queued via the pending app (node locked)
                     if (j.optBoolean("status", false) || j.optBoolean("pending", false)) cb.onSent();
                     else cb.onFailed(j.optString("error", "the node rejected the send"));
                 }
                 @Override public void onError(String message) { cb.onFailed(message); }
-            });
+            }));
         } catch (Exception e) {
             cb.onFailed(e.getMessage());
         }
