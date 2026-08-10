@@ -5,14 +5,14 @@
   "3": "CommsIdentity",
   "4": "CommsScanner",
   "5": "CommsDb",
-  "6": ".roundBg",
+  "6": "Design",
   "7": "MailMessage",
   "8": "Util",
   "9": ".compressToFit",
-  "10": "QrUtil.java",
-  "11": "Sodium",
+  "10": "MainActivity.java",
+  "11": "MailMessage",
   "12": "gradlew",
-  "13": "Folder",
+  "13": "Override",
   "14": "app/build.gradle",
   "15": "settings.gradle",
   "16": "Minima Mail (native Android)",
@@ -23,5 +23,6 @@
   "21": "FrameLayout",
   "22": "Handler",
   "23": "LazySodium",
-  "24": "Uri"
+  "24": "Uri",
+  "25": "TextView"
 }
