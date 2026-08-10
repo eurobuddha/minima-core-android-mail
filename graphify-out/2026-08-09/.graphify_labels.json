@@ -2,11 +2,11 @@
   "0": "CommsScanner",
   "1": "MainActivity",
   "2": ".buildConversation",
-  "3": ".doImport",
+  "3": "CommsIdentity",
   "4": "MailMessage",
   "5": "CommsDb",
   "6": ".roundBg",
-  "7": ".onBindViewHolder",
+  "7": "LinearLayout",
   "8": "Util",
   "9": ".compressToFit",
   "10": "QrUtil.java",
@@ -15,6 +15,6 @@
   "13": "Emojis",
   "14": "app/build.gradle",
   "15": "settings.gradle",
-  "16": "Minima Mail (native Android)",
+  "16": "BackupCrypto",
   "17": "User instructions — AUTHORITATIVE. These override default behavior and must be followed exactly."
 }

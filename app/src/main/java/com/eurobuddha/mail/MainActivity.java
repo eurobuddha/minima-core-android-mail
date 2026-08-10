@@ -11,6 +11,8 @@ import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
@@ -41,9 +43,11 @@ import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
+import androidx.drawerlayout.widget.DrawerLayout;
 import androidx.recyclerview.widget.ItemTouchHelper;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 import android.graphics.Canvas;
 import android.graphics.Paint;
@@ -79,10 +83,12 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Minima Mail — iMessage-style native encrypted on-chain messenger. */
+/** Minima Mail — on-chain email. Drawer + folders + subjects; bubbles inside a conversation. */
 public class MainActivity extends AppCompatActivity {
 
     private static final String CH = "mail";
+
+    private enum Folder { INBOX, OUTBOX, SENT, ARCHIVE, CONTACTS, IDENTITY, SETTINGS }
 
     private LazySodium ls;
     private NodeApi node;
@@ -107,19 +113,23 @@ public class MainActivity extends AppCompatActivity {
     private final java.util.concurrent.ExecutorService io = java.util.concurrent.Executors.newSingleThreadExecutor();
     private BroadcastReceiver notifyReceiver;
 
-    private LinearLayout root, pairingBanner;
+    private DrawerLayout drawer;
+    private LinearLayout navPanel, contentCol, pairingBanner;
     private FrameLayout container;
+    private Folder folder = Folder.INBOX;
     private final ArrayDeque<View> stack = new ArrayDeque<>();
     private int insetTop = 0, insetBottom = 0;
     private RecyclerView currentMessages;   // for scroll-to-bottom on keyboard
     private MessagesAdapter convAdapter;    // the open conversation's adapter, for in-place message updates
-    private String convOtherKey;            // the open conversation's contact
+    private String convHashref;             // the open conversation's thread key
+    private TextView freshText;             // the inbox freshness line ("Checked block N · Xm ago")
+    private SwipeRefreshLayout inboxSwipe;
 
     private ActivityResultLauncher<String> exportLauncher;
     private ActivityResultLauncher<String[]> importLauncher;
     private ActivityResultLauncher<ScanOptions> scanLauncher;
     private ActivityResultLauncher<String> imagePicker;
-    private String imagePickContact;
+    private String imagePickContact, imagePickSubject = "";
     private EditText pendingScanTarget;
     private boolean pendingScanIsAddress;   // true → scan to fill a Minima address field (not a Mail key)
 
@@ -129,18 +139,36 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         ls = Sodium.get();
         db = new CommsDb(this);
+        Design.load(db.getMeta("theme", "light"));
         myName = db.getMeta("myname", "");
         myPayaddr = db.getMeta("mypayaddr", "");
 
-        root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Design.BG);
+        getWindow().setBackgroundDrawable(new ColorDrawable(Design.BG));
+
+        drawer = new DrawerLayout(this);
+        contentCol = new LinearLayout(this);
+        contentCol.setOrientation(LinearLayout.VERTICAL);
+        contentCol.setBackgroundColor(Design.BG);
         pairingBanner = buildPairingBanner();
         pairingBanner.setVisibility(View.GONE);
         container = new FrameLayout(this);
-        root.addView(pairingBanner, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-        root.addView(container, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
-        setContentView(root);
+        contentCol.addView(pairingBanner, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        contentCol.addView(container, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        drawer.addView(contentCol, new DrawerLayout.LayoutParams(DrawerLayout.LayoutParams.MATCH_PARENT, DrawerLayout.LayoutParams.MATCH_PARENT));
+
+        navPanel = new LinearLayout(this);
+        navPanel.setOrientation(LinearLayout.VERTICAL);
+        navPanel.setBackgroundColor(Design.SURFACE);
+        DrawerLayout.LayoutParams nlp = new DrawerLayout.LayoutParams(dp(288), DrawerLayout.LayoutParams.MATCH_PARENT, Gravity.START);
+        drawer.addView(navPanel, nlp);
+        drawer.addDrawerListener(new DrawerLayout.SimpleDrawerListener() {
+            @Override public void onDrawerStateChanged(int newState) {
+                if (newState == DrawerLayout.STATE_DRAGGING || newState == DrawerLayout.STATE_SETTLING) rebuildNav();
+            }
+        });
+        rebuildNav();
+
+        setContentView(drawer);
         applyInsets();
         ensureChannel();
         requestNotifPermission();
@@ -161,10 +189,10 @@ public class MainActivity extends AppCompatActivity {
             }
         });
         imagePicker = registerForActivityResult(new ActivityResultContracts.GetContent(), uri -> {
-            if (uri != null && imagePickContact != null) sendImage(imagePickContact, uri);
+            if (uri != null && imagePickContact != null) sendImage(imagePickContact, imagePickSubject, uri);
         });
 
-        showInbox();
+        showFolder(Folder.INBOX);
 
         node = new NodeApi(this, this::onPaired);
         notifyReceiver = new BroadcastReceiver() {
@@ -177,44 +205,182 @@ public class MainActivity extends AppCompatActivity {
         };
         ContextCompat.registerReceiver(this, notifyReceiver,
                 new IntentFilter(MinimaAPIMessages.MINIMA_API_NOTIFY), ContextCompat.RECEIVER_EXPORTED);
+
+        ui.postDelayed(freshTick, 30000);
     }
+
+    private final Runnable freshTick = new Runnable() {
+        @Override public void run() {
+            updateFreshness();
+            ui.postDelayed(this, 30000);
+        }
+    };
 
     @Override protected void onDestroy() {
         super.onDestroy();
+        ui.removeCallbacks(freshTick);
         if (notifyReceiver != null) try { unregisterReceiver(notifyReceiver); } catch (Exception ignored) {}
         if (node != null) node.onDestroy();
         io.shutdownNow();
     }
 
-    @Override public void onBackPressed() { if (stack.size() > 1) pop(); else super.onBackPressed(); }
+    @Override public void onBackPressed() {
+        if (drawer.isDrawerOpen(Gravity.START)) { drawer.closeDrawer(Gravity.START); return; }
+        if (stack.size() > 1) pop();
+        else if (folder != Folder.INBOX) showFolder(Folder.INBOX);
+        else super.onBackPressed();
+    }
 
     private void applyInsets() {
-        ViewCompat.setOnApplyWindowInsetsListener(root, (v, insets) -> {
+        ViewCompat.setOnApplyWindowInsetsListener(drawer, (v, insets) -> {
             Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
             Insets ime = insets.getInsets(WindowInsetsCompat.Type.ime());
             insetTop = bars.top;
             insetBottom = Math.max(bars.bottom, ime.bottom);
-            root.setPadding(0, insetTop, 0, insetBottom);
+            contentCol.setPadding(0, insetTop, 0, insetBottom);
+            navPanel.setPadding(0, insetTop, 0, bars.bottom);
             if (ime.bottom > 0 && currentMessages != null && currentMessages.getAdapter() != null) {
                 currentMessages.scrollToPosition(Math.max(0, currentMessages.getAdapter().getItemCount() - 1));
             }
             return insets;
         });
-        ViewCompat.requestApplyInsets(root);
-        new WindowInsetsControllerCompat(getWindow(), root).setAppearanceLightStatusBars(false);
+        ViewCompat.requestApplyInsets(drawer);
+        new WindowInsetsControllerCompat(getWindow(), drawer).setAppearanceLightStatusBars(Design.LIGHT);
     }
 
     // ---- navigation ----
 
     private void push(View v) { stack.push(v); showTop(); }
-    private void pop() { if (stack.size() > 1) { stack.pop(); showTop(); } }
-    private void showInbox() { stack.clear(); stack.push(buildInbox()); showTop(); }
+
+    private void pop() {
+        if (stack.size() > 1) {
+            stack.pop();
+            if (stack.size() == 1) refreshTop(buildFolder(folder));   // root re-reads the DB (unread dots etc.)
+            else showTop();
+        }
+    }
+
+    private void showFolder(Folder f) {
+        folder = f;
+        stack.clear();
+        stack.push(buildFolder(f));
+        showTop();
+    }
+
+    private View buildFolder(Folder f) {
+        switch (f) {
+            case OUTBOX:   return buildStatusList("Outbox", true);
+            case SENT:     return buildStatusList("Sent", false);
+            case ARCHIVE:  return buildThreadList(true);
+            case CONTACTS: return buildContacts();
+            case IDENTITY: return buildIdentity();
+            case SETTINGS: return buildSettings();
+            default:       return buildThreadList(false);
+        }
+    }
+
     private void showTop() {
         currentMessages = null;
         container.removeAllViews();
         container.addView(stack.peek());
     }
     private void refreshTop(View rebuilt) { stack.pop(); stack.push(rebuilt); showTop(); }
+
+    /** Rebuild the visible root folder (called after data changes, never over a pushed screen/dialog). */
+    private void refreshFolderIfVisible() {
+        if (!modalOpen && stack.size() == 1) refreshTop(buildFolder(folder));
+    }
+
+    // ---- drawer ----
+
+    private void rebuildNav() {
+        navPanel.removeAllViews();
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.VERTICAL);
+        head.setPadding(dp(18), dp(20), dp(18), dp(14));
+        TextView brand = new TextView(this);
+        android.text.SpannableString bs = new android.text.SpannableString("MINIMA MAIL");
+        bs.setSpan(new android.text.style.ForegroundColorSpan(Design.ACCENT), 7, 11, 0);
+        brand.setText(bs);
+        brand.setTextColor(Design.TEXT); brand.setTextSize(16f); brand.setTypeface(Typeface.DEFAULT_BOLD);
+        TextView me = new TextView(this);
+        me.setText(myId == null ? "connecting to your node…" : "you · " + shortKey(myId));
+        me.setTextColor(Design.DIM); me.setTextSize(11f); me.setTypeface(Typeface.MONOSPACE);
+        me.setPadding(0, dp(3), 0, 0);
+        // NB: no click handler on the header — it sits under the hamburger's screen position, so a
+        // double-tap on the hamburger would silently navigate. "Your key" below covers the shortcut.
+        head.addView(brand); head.addView(me);
+        navPanel.addView(head);
+        navPanel.addView(hairline());
+
+        int unread = db.unreadCount();
+        int pending = db.outboxCount();
+        navPanel.addView(navItem(R.drawable.ic_inbox, "Inbox", unread, Folder.INBOX));
+        navPanel.addView(navItem(R.drawable.ic_outbox, "Outbox", pending, Folder.OUTBOX));
+        navPanel.addView(navItem(R.drawable.ic_send, "Sent", 0, Folder.SENT));
+        navPanel.addView(navItem(R.drawable.ic_archive, "Archive", 0, Folder.ARCHIVE));
+        View sep = hairline();
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, Math.max(1, dp(1)));
+        slp.setMargins(dp(18), dp(8), dp(18), dp(8));
+        navPanel.addView(sep, slp);
+        navPanel.addView(navItem(R.drawable.ic_contacts, "Contacts", 0, Folder.CONTACTS));
+        navPanel.addView(navItem(R.drawable.ic_key, "Your key", 0, Folder.IDENTITY));
+        navPanel.addView(navItem(R.drawable.ic_settings, "Settings", 0, Folder.SETTINGS));
+
+        View spacer = new View(this);
+        navPanel.addView(spacer, new LinearLayout.LayoutParams(1, 0, 1f));
+        TextView ver = new TextView(this);
+        ver.setText("Minima Mail v" + BuildConfig.VERSION_NAME);
+        ver.setTextColor(Design.DIM2); ver.setTextSize(10.5f);
+        ver.setPadding(dp(18), dp(6), dp(18), dp(10));
+        navPanel.addView(ver);
+    }
+
+    private View navItem(int iconRes, String label, int badgeCount, final Folder target) {
+        boolean sel = folder == target && stack.size() == 1;
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(18), dp(11), dp(14), dp(11));
+        int tint = sel ? Design.ACCENT : Design.DIM;
+        row.addView(icon(iconRes, tint, 20));
+        TextView t = new TextView(this);
+        t.setText(label);
+        t.setTextColor(sel ? Design.ACCENT : Design.TEXT);
+        t.setTextSize(14.5f);
+        if (sel) t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setPadding(dp(14), 0, 0, 0);
+        t.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(t);
+        if (badgeCount > 0) {
+            TextView b = new TextView(this);
+            b.setText(String.valueOf(badgeCount));
+            b.setTextColor(Design.ON_ACCENT); b.setTextSize(10.5f); b.setTypeface(Typeface.DEFAULT_BOLD);
+            b.setBackground(Design.roundBg(this, Design.ACCENT, 10));
+            b.setPadding(dp(7), dp(1), dp(7), dp(1));
+            row.addView(b);
+        }
+        if (sel) {
+            GradientDrawable d = new GradientDrawable();
+            d.setColor((Design.ACCENT & 0x00FFFFFF) | 0x22000000);
+            float r = dp(22);
+            d.setCornerRadii(new float[]{0, 0, r, r, r, r, 0, 0});
+            row.setBackground(d);
+            ViewGroup.MarginLayoutParams mlp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            ((ViewGroup.MarginLayoutParams) mlp).rightMargin = dp(12);
+            row.setLayoutParams(mlp);
+        }
+        row.setOnClickListener(v -> { drawer.closeDrawer(Gravity.START); showFolder(target); });
+        return row;
+    }
+
+    private View hairline() {
+        View v = new View(this);
+        v.setBackgroundColor(Design.HAIRLINE);
+        v.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, Math.max(1, dp(1))));
+        return v;
+    }
 
     // ---- pairing + identity ----
 
@@ -247,7 +413,8 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onResult(JSONObject j) {
                 JSONObject r = j.optJSONObject("response");
                 if (r != null) try { chainBlock = Integer.parseInt(r.optString("block", "0")); } catch (Exception ignored) {}
-                if (chainBlock > 0) io.execute(() -> { db.markConfirmed(chainBlock); ui.post(() -> { if (!modalOpen && stack.size() == 1) refreshTop(buildInbox()); }); });
+                updateFreshness();
+                if (chainBlock > 0) io.execute(() -> { db.markConfirmed(chainBlock); ui.post(MainActivity.this::refreshFolderIfVisible); });
             }
             @Override public void onError(String m) {}
         });
@@ -272,7 +439,7 @@ public class MainActivity extends AppCompatActivity {
             try {
                 byte[] seed = ikm.startsWith("0x") ? Hex.from(ikm) : ikm.getBytes(StandardCharsets.UTF_8);
                 CommsIdentity id = CommsIdentity.fromSeed(ls, seed);
-                ui.post(() -> { adoptIdentity(id); refreshTop(buildInbox()); requestScan(); });
+                ui.post(() -> { adoptIdentity(id); refreshFolderIfVisible(); requestScan(); });
             } catch (Exception e) { ui.post(() -> toast("Identity error: " + e.getMessage())); }
         });
     }
@@ -340,12 +507,12 @@ public class MainActivity extends AppCompatActivity {
     private void requestScan() { if (crypto != null && scanner != null) scanner.scan(chainBlock); }
 
     /** Reload the open conversation's messages WITHOUT rebuilding the screen (so an open dialog is untouched). */
-    private void reloadConversation(final String otherKey) {
-        if (convAdapter == null || convOtherKey == null || !convOtherKey.equals(otherKey)) return;
+    private void reloadConversation(final String hashref) {
+        if (convAdapter == null || convHashref == null || !convHashref.equals(hashref)) return;
         final MessagesAdapter a = convAdapter;
         final RecyclerView rv = currentMessages;
         io.execute(() -> {
-            final List<MailMessage> msgs = db.thread(MailText.threadKey(myId, otherKey, ""));
+            final List<MailMessage> msgs = db.thread(hashref);
             ui.post(() -> {
                 if (convAdapter != a) return;   // user navigated away in the meantime
                 a.setData(msgs);
@@ -356,35 +523,72 @@ public class MainActivity extends AppCompatActivity {
 
     private void onScanDone(boolean ok, int newCount) {
         ui.post(() -> {
+            if (inboxSwipe != null) inboxSwipe.setRefreshing(false);
+            updateFreshness();
             if (newCount > 0) {
                 notifyNew(newCount);
-                View top = stack.peek();
-                if (top != null && convOtherKey != null && convOtherKey.equals(top.getTag())) {
-                    reloadConversation(convOtherKey);   // in-place — never rebuilds, never disturbs a dialog
-                } else if (stack.size() == 1 && !modalOpen) {
-                    refreshTop(buildInbox());
-                }
+                if (convHashref != null && stack.size() > 1) reloadConversation(convHashref);   // in-place, dialog-safe
+                else refreshFolderIfVisible();
             }
         });
     }
 
-    // ---- INBOX (chat list) ----
+    // ---- freshness ("checked block N · Xm ago") ----
 
-    private View buildInbox() {
+    private View buildFreshness() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setBackgroundColor(Design.SURFACE);
+        bar.setPadding(dp(14), dp(3), dp(14), dp(7));
+        View dot = new View(this);
+        GradientDrawable g = new GradientDrawable(); g.setShape(GradientDrawable.OVAL);
+        g.setColor(paired ? Design.GREEN : Design.DIM2);
+        dot.setBackground(g);
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(dp(6), dp(6));
+        dlp.rightMargin = dp(6);
+        bar.addView(dot, dlp);
+        freshText = new TextView(this);
+        freshText.setTextColor(Design.DIM); freshText.setTextSize(10.5f);
+        freshText.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        bar.addView(freshText);
+        LinearLayout check = new LinearLayout(this);
+        check.setOrientation(LinearLayout.HORIZONTAL);
+        check.setGravity(Gravity.CENTER_VERTICAL);
+        check.addView(icon(R.drawable.ic_refresh, Design.ACCENT, 11));
+        TextView ct = new TextView(this);
+        ct.setText("Check now"); ct.setTextColor(Design.ACCENT); ct.setTextSize(10.5f); ct.setTypeface(Typeface.DEFAULT_BOLD);
+        ct.setPadding(dp(4), 0, 0, 0);
+        check.addView(ct);
+        check.setPadding(dp(8), dp(2), 0, dp(2));
+        check.setOnClickListener(v -> { fetchBlock(); requestScan(); toast("Checking the chain…"); });
+        bar.addView(check);
+        updateFreshness();
+        return bar;
+    }
+
+    private void updateFreshness() {
+        if (freshText == null) return;
+        if (crypto == null) { freshText.setText(paired ? "Connecting to your node…" : "Waiting for Minima Core…"); return; }
+        long last = scanner == null ? 0 : scanner.lastScanEnd();
+        String blk = chainBlock > 0 ? "block " + String.format(java.util.Locale.ENGLISH, "%,d", chainBlock) : "the chain";
+        if (last <= 0) { freshText.setText("Checking " + blk + "…"); return; }
+        long m = (System.currentTimeMillis() - last) / 60000;
+        String ago = m < 1 ? "just now" : m + " min ago";
+        freshText.setText("Checked " + blk + " · " + ago);
+    }
+
+    // ---- INBOX / ARCHIVE (thread lists, email rows) ----
+
+    private View buildThreadList(final boolean archivedView) {
         FrameLayout screen = new FrameLayout(this);
         LinearLayout col = column();
 
-        LinearLayout head = header("Messages", false);
-        head.addView(iconBtn("⋮", this::showMenu));
+        LinearLayout head = header(archivedView ? "Archive" : "Inbox", false);
         col.addView(head);
+        if (!archivedView) col.addView(buildFreshness());
 
-        TextView ver = new TextView(this);
-        ver.setText("Minima Mail v" + BuildConfig.VERSION_NAME);
-        ver.setTextColor(Design.DIM2); ver.setTextSize(10f);
-        ver.setPadding(dp(16), dp(2), dp(16), dp(4));
-        col.addView(ver);
-
-        if (crypto == null) {
+        if (crypto == null && !archivedView) {
             TextView s = new TextView(this);
             s.setText(paired ? "Connecting to your node…" : "Enable Minima Mail in Minima Core → Apps.");
             s.setTextColor(Design.DIM);
@@ -395,33 +599,60 @@ public class MainActivity extends AppCompatActivity {
 
         RecyclerView rv = new RecyclerView(this);
         rv.setLayoutManager(new LinearLayoutManager(this));
-        final ChatListAdapter adapter = new ChatListAdapter(new ArrayList<>(), false);
+        final ChatListAdapter adapter = new ChatListAdapter(new ArrayList<>(), archivedView);
         rv.setAdapter(adapter);
         attachSwipe(rv, adapter);
+        rv.setClipToPadding(false);
+        rv.setPadding(0, 0, 0, dp(88));
+
+        final TextView empty = new TextView(this);
+        empty.setText(archivedView ? "No archived threads." : "No mail yet.\nCompose a message to get started.");
+        empty.setTextColor(Design.DIM2); empty.setGravity(Gravity.CENTER); empty.setTextSize(13f);
+        empty.setPadding(dp(24), dp(64), dp(24), 0); empty.setVisibility(View.GONE);
+
         io.execute(() -> {                                  // load off the UI thread
             java.util.Set<String> archived = db.archivedSet();
             List<MailMessage> threads = new ArrayList<>();
-            for (MailMessage t : db.threads()) if (!archived.contains(t.hashref)) threads.add(t);
-            ui.post(() -> { adapter.data.clear(); adapter.data.addAll(threads); adapter.notifyDataSetChanged(); });
+            for (MailMessage t : db.threads()) if (archived.contains(t.hashref) == archivedView) threads.add(t);
+            ui.post(() -> {
+                adapter.data.clear(); adapter.data.addAll(threads); adapter.notifyDataSetChanged();
+                empty.setVisibility(threads.isEmpty() ? View.VISIBLE : View.GONE);
+            });
         });
-        rv.setClipToPadding(false);
-        rv.setPadding(0, 0, 0, dp(88));
-        col.addView(rv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
+        if (archivedView) {
+            col.addView(rv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+            col.addView(empty);
+            screen.addView(col);
+            return screen;
+        }
+
+        inboxSwipe = new SwipeRefreshLayout(this);
+        inboxSwipe.setColorSchemeColors(Design.ACCENT);
+        inboxSwipe.setProgressBackgroundColorSchemeColor(Design.SURFACE);
+        LinearLayout inner = column();
+        inner.addView(rv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT));
+        inboxSwipe.addView(inner);
+        inboxSwipe.setOnRefreshListener(() -> {
+            fetchBlock(); requestScan();
+            ui.postDelayed(() -> { if (inboxSwipe != null) inboxSwipe.setRefreshing(false); }, 4000);
+        });
+        FrameLayout listWrap = new FrameLayout(this);
+        listWrap.addView(inboxSwipe);
+        listWrap.addView(empty);
+        col.addView(listWrap, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
         screen.addView(col);
 
-        // FAB → new chat
-        TextView fab = new TextView(this);
-        fab.setText("✏");
-        fab.setTextSize(22f);
-        fab.setTextColor(Design.ON_ACCENT);
-        fab.setGravity(Gravity.CENTER);
-        GradientDrawable fb = new GradientDrawable();
-        fb.setShape(GradientDrawable.OVAL);
-        fb.setColor(Design.ACCENT);
+        // FAB → compose
+        FrameLayout fab = new FrameLayout(this);
+        GradientDrawable fb = Design.roundBg(this, Design.ACCENT, 16);
         fab.setBackground(fb);
-        fab.setOnClickListener(v -> push(buildNewChat()));
-        FrameLayout.LayoutParams flp = new FrameLayout.LayoutParams(dp(60), dp(60));
+        fab.setElevation(dp(6));
+        ImageView pen = icon(R.drawable.ic_pen, Design.ON_ACCENT, 24);
+        FrameLayout.LayoutParams plp = new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER);
+        fab.addView(pen, plp);
+        fab.setOnClickListener(v -> push(buildCompose(null, null)));
+        FrameLayout.LayoutParams flp = new FrameLayout.LayoutParams(dp(56), dp(56));
         flp.gravity = Gravity.BOTTOM | Gravity.END;
         flp.setMargins(0, 0, dp(20), dp(24));
         screen.addView(fab, flp);
@@ -434,56 +665,73 @@ public class MainActivity extends AppCompatActivity {
         ChatListAdapter(List<MailMessage> d, boolean arch) { data = d; archivedView = arch; }
 
         @NonNull @Override public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup p, int t) {
-            LinearLayout row = new LinearLayout(MainActivity.this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(14), dp(10), dp(14), dp(10));
-            row.setLayoutParams(new RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            return new RecyclerView.ViewHolder(row) {};
+            LinearLayout wrap = new LinearLayout(MainActivity.this);
+            wrap.setOrientation(LinearLayout.VERTICAL);
+            wrap.setLayoutParams(new RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            return new RecyclerView.ViewHolder(wrap) {};
         }
 
         @Override public void onBindViewHolder(@NonNull RecyclerView.ViewHolder h, int pos) {
             MailMessage t = data.get(pos);
             String other = myId != null && myId.equals(t.frompublickey) ? t.topublickey : t.frompublickey;
             String name = nameFor(other);
-            LinearLayout row = (LinearLayout) h.itemView;
-            row.removeAllViews();
-            row.addView(avatar(other, name, 48));
+            boolean unread = t.incoming && !t.read;
+
+            LinearLayout wrap = (LinearLayout) h.itemView;
+            wrap.removeAllViews();
+            wrap.setBackgroundColor(Design.BG);
+
+            LinearLayout row = new LinearLayout(MainActivity.this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(14), dp(10), dp(14), dp(10));
+            row.addView(avatar(other, name, 44));
 
             LinearLayout mid = new LinearLayout(MainActivity.this);
             mid.setOrientation(LinearLayout.VERTICAL);
             mid.setPadding(dp(12), 0, dp(8), 0);
             mid.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+            LinearLayout l1 = new LinearLayout(MainActivity.this);
+            l1.setOrientation(LinearLayout.HORIZONTAL);
             TextView nm = new TextView(MainActivity.this);
-            nm.setText(name); nm.setTextColor(Design.TEXT); nm.setTextSize(16f); nm.setTypeface(Typeface.DEFAULT_BOLD);
+            nm.setText(name);
+            nm.setTextColor(unread ? Design.TEXT : Design.DIM);
+            nm.setTextSize(14.5f);
+            nm.setTypeface(unread ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
             nm.setMaxLines(1);
+            nm.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            TextView time = new TextView(MainActivity.this);
+            time.setText(rel(t.date)); time.setTextColor(Design.DIM2); time.setTextSize(11f);
+            l1.addView(nm); l1.addView(time);
+
+            TextView subj = new TextView(MainActivity.this);
+            boolean noSubject = t.subject == null || t.subject.isEmpty();
+            subj.setText(noSubject ? "(no subject)" : t.subject);
+            subj.setTextColor(unread ? Design.TEXT : Design.DIM);
+            if (noSubject) { subj.setTypeface(Typeface.defaultFromStyle(Typeface.ITALIC)); subj.setTextColor(Design.DIM2); }
+            else subj.setTypeface(unread ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+            subj.setTextSize(12.5f); subj.setMaxLines(1);
+
             TextView snip = new TextView(MainActivity.this);
-            boolean unread = t.incoming && !t.read;
             snip.setText((t.incoming ? "" : "You: ") + previewText(t));
-            snip.setTextColor(unread ? Design.TEXT : Design.DIM);
-            snip.setTextSize(13f); snip.setMaxLines(1);
-            mid.addView(nm); mid.addView(snip);
+            snip.setTextColor(Design.DIM);
+            snip.setTextSize(11.5f); snip.setMaxLines(1);
+
+            mid.addView(l1); mid.addView(subj); mid.addView(snip);
             row.addView(mid);
 
-            LinearLayout right = new LinearLayout(MainActivity.this);
-            right.setOrientation(LinearLayout.VERTICAL);
-            right.setGravity(Gravity.END);
-            TextView time = new TextView(MainActivity.this);
-            time.setText(rel(t.date)); time.setTextColor(Design.DIM2); time.setTextSize(11f); time.setGravity(Gravity.END);
-            right.addView(time);
             if (unread) {
-                TextView dot = new TextView(MainActivity.this);
-                dot.setText(" "); dot.setWidth(dp(10)); dot.setHeight(dp(10));
+                View udot = new View(MainActivity.this);
                 GradientDrawable g = new GradientDrawable(); g.setShape(GradientDrawable.OVAL); g.setColor(Design.ACCENT);
-                dot.setBackground(g);
-                LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(dp(10), dp(10));
-                dlp.topMargin = dp(6); dlp.gravity = Gravity.END;
-                dot.setLayoutParams(dlp);
-                right.addView(dot);
+                udot.setBackground(g);
+                row.addView(udot, new LinearLayout.LayoutParams(dp(8), dp(8)));
             }
-            row.addView(right);
-            row.setOnClickListener(v -> openConversation(other));
-            row.setOnLongClickListener(v -> { showThreadActions(t, archivedView); return true; });
+            wrap.addView(row);
+            wrap.addView(hairline());
+
+            wrap.setOnClickListener(v -> openConversation(t));
+            wrap.setOnLongClickListener(v -> { showThreadActions(t, archivedView); return true; });
         }
 
         @Override public int getItemCount() { return data.size(); }
@@ -504,7 +752,7 @@ public class MainActivity extends AppCompatActivity {
                     adapter.data.remove(pos); adapter.notifyItemRemoved(pos);
                     toast(adapter.archivedView ? "Unarchived" : "Archived");
                 } else {                                            // delete (confirm; restore row if cancelled)
-                    new AlertDialog.Builder(MainActivity.this).setMessage("Delete this conversation?")
+                    new AlertDialog.Builder(MainActivity.this).setMessage("Delete this thread?")
                             .setPositiveButton("Delete", (d, w) -> { io.execute(() -> db.deleteThread(hashref)); adapter.data.remove(pos); adapter.notifyItemRemoved(pos); })
                             .setNegativeButton("Cancel", (d, w) -> adapter.notifyItemChanged(pos))
                             .setOnCancelListener(d -> adapter.notifyItemChanged(pos)).show();
@@ -543,69 +791,175 @@ public class MainActivity extends AppCompatActivity {
             if (w == 0) {
                 io.execute(() -> db.setArchived(hashref, !archivedView));
                 toast(archivedView ? "Unarchived" : "Archived");
-                refreshTop(archivedView ? buildArchived() : buildInbox());
+                refreshFolderIfVisible();
             } else {
-                new AlertDialog.Builder(this).setMessage("Delete this conversation?")
-                        .setPositiveButton("Delete", (dd, ww) -> { io.execute(() -> db.deleteThread(hashref)); refreshTop(archivedView ? buildArchived() : buildInbox()); })
+                new AlertDialog.Builder(this).setMessage("Delete this thread?")
+                        .setPositiveButton("Delete", (dd, ww) -> { io.execute(() -> db.deleteThread(hashref)); refreshFolderIfVisible(); })
                         .setNegativeButton("Cancel", null).show();
             }
         }).show();
     }
 
-    private View buildArchived() {
+    private void openConversation(MailMessage thread) {
+        String other = myId != null && myId.equals(thread.frompublickey) ? thread.topublickey : thread.frompublickey;
+        openConversation(other, thread.subject == null ? "" : thread.subject);
+    }
+
+    private void openConversation(final String otherKey, final String subject) {
+        io.execute(() -> {
+            db.markThreadRead(MailText.threadKey(myId, otherKey, subject == null ? "" : subject));
+            ui.post(() -> push(buildConversation(otherKey, subject == null ? "" : subject)));
+        });
+    }
+
+    // ---- OUTBOX / SENT (per-message status lists) ----
+
+    private View buildStatusList(String title, final boolean outboxView) {
         LinearLayout col = column();
-        col.addView(header("Archived", true));
+        col.addView(header(title, false));
+
         RecyclerView rv = new RecyclerView(this);
         rv.setLayoutManager(new LinearLayoutManager(this));
-        final ChatListAdapter adapter = new ChatListAdapter(new ArrayList<>(), true);
-        rv.setAdapter(adapter);
-        attachSwipe(rv, adapter);
-        col.addView(rv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
         final TextView empty = new TextView(this);
-        empty.setText("No archived chats."); empty.setTextColor(Design.DIM2); empty.setGravity(Gravity.CENTER);
-        empty.setPadding(0, dp(64), 0, 0); empty.setVisibility(View.GONE);
-        col.addView(empty);
-        io.execute(() -> {                                  // load off the UI thread
-            java.util.Set<String> archived = db.archivedSet();
-            List<MailMessage> threads = new ArrayList<>();
-            for (MailMessage t : db.threads()) if (archived.contains(t.hashref)) threads.add(t);
+        empty.setText(outboxView ? "Outbox is empty — everything you sent has reached the chain."
+                : "Nothing sent yet.");
+        empty.setTextColor(Design.DIM2); empty.setGravity(Gravity.CENTER); empty.setTextSize(13f);
+        empty.setPadding(dp(24), dp(64), dp(24), 0); empty.setVisibility(View.GONE);
+
+        final List<MailMessage> data = new ArrayList<>();
+        RecyclerView.Adapter<RecyclerView.ViewHolder> adapter = new RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+            @NonNull @Override public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup p, int t) {
+                LinearLayout wrap = new LinearLayout(MainActivity.this);
+                wrap.setOrientation(LinearLayout.VERTICAL);
+                wrap.setLayoutParams(new RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                return new RecyclerView.ViewHolder(wrap) {};
+            }
+
+            @Override public void onBindViewHolder(@NonNull RecyclerView.ViewHolder h, int pos) {
+                final MailMessage m = data.get(pos);
+                LinearLayout wrap = (LinearLayout) h.itemView;
+                wrap.removeAllViews();
+                LinearLayout cell = new LinearLayout(MainActivity.this);
+                cell.setOrientation(LinearLayout.VERTICAL);
+                cell.setPadding(dp(14), dp(10), dp(14), dp(10));
+
+                LinearLayout l1 = new LinearLayout(MainActivity.this);
+                TextView to = new TextView(MainActivity.this);
+                String subj = (m.subject == null || m.subject.isEmpty()) ? "(no subject)" : m.subject;
+                to.setText("To " + nameFor(m.topublickey) + " — " + subj);
+                to.setTextColor(Design.TEXT); to.setTextSize(13f); to.setTypeface(Typeface.DEFAULT_BOLD);
+                to.setMaxLines(1);
+                to.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                TextView time = new TextView(MainActivity.this);
+                time.setText(rel(m.date)); time.setTextColor(Design.DIM2); time.setTextSize(10.5f);
+                l1.addView(to); l1.addView(time);
+                cell.addView(l1);
+
+                TextView snip = new TextView(MainActivity.this);
+                snip.setText(previewText(m));
+                snip.setTextColor(Design.DIM); snip.setTextSize(11.5f); snip.setMaxLines(1);
+                cell.addView(snip);
+
+                cell.addView(statusLine(m, outboxView));
+                wrap.addView(cell);
+                wrap.addView(hairline());
+                wrap.setOnClickListener(v -> openConversation(m.topublickey, m.subject == null ? "" : m.subject));
+            }
+
+            @Override public int getItemCount() { return data.size(); }
+        };
+        rv.setAdapter(adapter);
+
+        io.execute(() -> {
+            List<MailMessage> l = outboxView ? db.outbox() : db.sent();
             ui.post(() -> {
-                adapter.data.clear(); adapter.data.addAll(threads); adapter.notifyDataSetChanged();
-                empty.setVisibility(threads.isEmpty() ? View.VISIBLE : View.GONE);
+                data.clear(); data.addAll(l); adapter.notifyDataSetChanged();
+                empty.setVisibility(l.isEmpty() ? View.VISIBLE : View.GONE);
             });
         });
+
+        FrameLayout listWrap = new FrameLayout(this);
+        listWrap.addView(rv);
+        listWrap.addView(empty);
+        col.addView(listWrap, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
         return col;
     }
 
-    private void openConversation(String otherKey) {
-        io.execute(() -> {
-            db.markThreadRead(MailText.threadKey(myId, otherKey, ""));
-            ui.post(() -> push(buildConversation(otherKey)));
-        });
+    /** The honest lifecycle line: ring "Posting…" → chain "On-chain · blk N" → check "Confirmed" / failed+Retry. */
+    private View statusLine(final MailMessage m, boolean withRetry) {
+        LinearLayout line = new LinearLayout(this);
+        line.setOrientation(LinearLayout.HORIZONTAL);
+        line.setGravity(Gravity.CENTER_VERTICAL);
+        line.setPadding(0, dp(4), 0, 0);
+        int ic; int tint; String label; int labelColor;
+        if ("posting".equals(m.status)) {
+            ic = R.drawable.ic_ring; tint = Design.ACCENT; label = "Posting to chain…"; labelColor = Design.ACCENT;
+        } else if ("failed".equals(m.status)) {
+            ic = R.drawable.ic_close; tint = Design.RED; label = "Failed — didn't reach the chain"; labelColor = Design.RED;
+        } else if ("confirmed".equals(m.status)) {
+            ic = R.drawable.ic_check; tint = Design.GREEN;
+            label = "Confirmed" + (m.sentblock > 0 ? " · block " + String.format(java.util.Locale.ENGLISH, "%,d", m.sentblock) : "");
+            labelColor = Design.DIM;
+        } else {
+            ic = R.drawable.ic_chain; tint = Design.GREEN;
+            label = "On-chain" + (m.sentblock > 0 ? " · block " + String.format(java.util.Locale.ENGLISH, "%,d", m.sentblock) : "") + " — confirming";
+            labelColor = Design.DIM;
+        }
+        line.addView(icon(ic, tint, 12));
+        TextView t = new TextView(this);
+        t.setText(label); t.setTextColor(labelColor); t.setTextSize(11f);
+        t.setPadding(dp(6), 0, 0, 0);
+        t.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        line.addView(t);
+        if (withRetry && "failed".equals(m.status)) {
+            LinearLayout retry = new LinearLayout(this);
+            retry.setOrientation(LinearLayout.HORIZONTAL);
+            retry.setGravity(Gravity.CENTER_VERTICAL);
+            retry.setBackground(Design.outlineBg(this, Design.ACCENT, 11));
+            retry.setPadding(dp(9), dp(2), dp(9), dp(2));
+            retry.addView(icon(R.drawable.ic_refresh, Design.ACCENT, 11));
+            TextView rt = new TextView(this);
+            rt.setText("Retry"); rt.setTextColor(Design.ACCENT); rt.setTextSize(10.5f); rt.setTypeface(Typeface.DEFAULT_BOLD);
+            rt.setPadding(dp(4), 0, 0, 0);
+            retry.addView(rt);
+            retry.setOnClickListener(v -> retrySend(m.id));
+            line.addView(retry);
+        }
+        return line;
     }
 
-    // ---- CONVERSATION ----
+    // ---- CONVERSATION (bubbles kept) ----
 
-    private View buildConversation(final String otherKey) {
-        final String hashref = MailText.threadKey(myId == null ? "" : myId, otherKey, "");
+    private View buildConversation(final String otherKey, final String subject) {
+        final String hashref = MailText.threadKey(myId == null ? "" : myId, otherKey, subject);
         LinearLayout col = column();
-        col.setTag(otherKey);   // marks this as an open conversation; onScanDone rebuilds it by otherKey
+        col.setTag(hashref);
         proactivePayaddr(otherKey);   // request their receiving address now, so it's ready when you pay
 
-        // top bar: back + avatar + name
+        // top bar: back + avatar + subject/name
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(Gravity.CENTER_VERTICAL);
         head.setBackgroundColor(Design.SURFACE);
         head.setPadding(dp(6), dp(8), dp(12), dp(8));
-        head.addView(iconBtn("‹", v -> pop()));
+        head.addView(iconBtn(R.drawable.ic_back, v -> pop()));
         head.addView(avatar(otherKey, nameFor(otherKey), 34));
+        LinearLayout tcol = new LinearLayout(this);
+        tcol.setOrientation(LinearLayout.VERTICAL);
+        tcol.setPadding(dp(10), 0, 0, 0);
+        tcol.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView nm = new TextView(this);
-        nm.setText(nameFor(otherKey)); nm.setTextColor(Design.TEXT); nm.setTextSize(16f); nm.setTypeface(Typeface.DEFAULT_BOLD);
-        nm.setPadding(dp(10), 0, 0, 0);
-        nm.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        head.addView(nm);
-        head.addView(iconBtn("⋮", v -> conversationMenu(otherKey, hashref)));
+        nm.setText(subject.isEmpty() ? nameFor(otherKey) : subject);
+        nm.setTextColor(Design.TEXT); nm.setTextSize(15f); nm.setTypeface(Typeface.DEFAULT_BOLD);
+        nm.setMaxLines(1);
+        TextView sub = new TextView(this);
+        sub.setText(subject.isEmpty() ? shortKey(otherKey) : nameFor(otherKey) + " · " + shortKey(otherKey));
+        sub.setTextColor(Design.DIM); sub.setTextSize(10.5f); sub.setTypeface(Typeface.MONOSPACE);
+        sub.setMaxLines(1);
+        tcol.addView(nm); tcol.addView(sub);
+        head.addView(tcol);
+        head.addView(iconBtn(R.drawable.ic_dots, v -> conversationMenu(otherKey, hashref)));
         col.addView(head);
 
         // messages
@@ -619,8 +973,8 @@ public class MainActivity extends AppCompatActivity {
         rv.setClipToPadding(false);
         col.addView(rv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
         currentMessages = rv;
-        convAdapter = adapter; convOtherKey = otherKey;   // enable in-place updates (no screen rebuild)
-        io.execute(() -> {                                // load messages off the UI thread
+        convAdapter = adapter; convHashref = hashref;   // enable in-place updates (no screen rebuild)
+        io.execute(() -> {                              // load messages off the UI thread
             final List<MailMessage> msgs = db.thread(hashref);
             ui.post(() -> { adapter.setData(msgs); if (!msgs.isEmpty()) rv.scrollToPosition(msgs.size() - 1); });
         });
@@ -631,23 +985,22 @@ public class MainActivity extends AppCompatActivity {
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setBackgroundColor(Design.SURFACE);
         bar.setPadding(dp(10), dp(8), dp(10), dp(8));
-        TextView attach = new TextView(this);
-        attach.setText("＋"); attach.setTextColor(Design.ACCENT); attach.setTextSize(26f); attach.setGravity(Gravity.CENTER);
-        attach.setPadding(dp(2), 0, dp(4), 0);
+        ImageView attach = iconBtn(R.drawable.ic_plus, null);
+        attach.setColorFilter(Design.ACCENT);
         attach.setOnClickListener(v -> {
             androidx.appcompat.widget.PopupMenu pm = new androidx.appcompat.widget.PopupMenu(this, attach);
             pm.getMenu().add(0, 1, 0, "Photo or GIF");
             pm.getMenu().add(0, 2, 1, "Send funds");
             pm.setOnMenuItemClickListener(it -> {
-                if (it.getItemId() == 1) { imagePickContact = otherKey; imagePicker.launch("image/*"); }
-                else showSendFundsSheet(otherKey);
+                if (it.getItemId() == 1) { imagePickContact = otherKey; imagePickSubject = subject; imagePicker.launch("image/*"); }
+                else showSendFundsSheet(otherKey, subject);
                 return true;
             });
             pm.show();
         });
         bar.addView(attach);
         final EditText box = new EditText(this);
-        box.setHint("Message");
+        box.setHint("Reply");
         box.setHintTextColor(Design.DIM2);
         box.setTextColor(Design.TEXT);
         box.setTextSize(15f);
@@ -657,30 +1010,17 @@ public class MainActivity extends AppCompatActivity {
         box.setPadding(dp(16), dp(10), dp(16), dp(10));
         box.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         bar.addView(box);
-        TextView emo = new TextView(this);
-        emo.setText("😊"); emo.setTextSize(22f); emo.setGravity(Gravity.CENTER);
-        emo.setPadding(dp(6), 0, dp(2), 0);
-        emo.setOnClickListener(v -> showEmojiPicker(box));
-        bar.addView(emo, 1);   // after the attach button, before the message box
 
-        final TextView send = new TextView(this);
-        send.setText("▲");
-        send.setTextColor(Design.ON_ACCENT);
-        send.setTextSize(16f);
-        send.setGravity(Gravity.CENTER);
+        final FrameLayout send = new FrameLayout(this);
         GradientDrawable sd = new GradientDrawable(); sd.setShape(GradientDrawable.OVAL); sd.setColor(Design.ACCENT);
         send.setBackground(sd);
+        send.addView(icon(R.drawable.ic_up, Design.ON_ACCENT, 16), new FrameLayout.LayoutParams(dp(16), dp(16), Gravity.CENTER));
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(dp(40), dp(40));
         slp.leftMargin = dp(8);
         send.setLayoutParams(slp);
         send.setOnClickListener(v -> {
             String text = box.getText().toString();
-            doSend(send, otherKey, text, () -> {
-                box.setText("");
-                List<MailMessage> updated = db.thread(hashref);
-                adapter.setData(updated);
-                if (!updated.isEmpty()) rv.scrollToPosition(updated.size() - 1);
-            });
+            doSend(send, otherKey, subject, text, () -> box.setText(""));
         });
         bar.addView(send);
         col.addView(bar);
@@ -707,7 +1047,8 @@ public class MainActivity extends AppCompatActivity {
                 boolean footer = last
                         || msgs.get(i + 1).incoming != m.incoming
                         || msgs.get(i + 1).date - m.date > 5 * 60 * 1000L
-                        || !sameDay(m.date, msgs.get(i + 1).date);
+                        || !sameDay(m.date, msgs.get(i + 1).date)
+                        || (!m.incoming && ("posting".equals(m.status) || "failed".equals(m.status)));
                 out.add(new Row(m, header, footer));
             }
             rows = out;
@@ -745,14 +1086,40 @@ public class MainActivity extends AppCompatActivity {
             v.addView(rowWrap);
 
             if (r.footer) {
-                TextView f = new TextView(MainActivity.this);
-                String time = clock(r.m.date);
-                String status = r.m.incoming ? "" : ("confirmed".equals(r.m.status) ? " · Delivered" : "sent".equals(r.m.status) ? " · Sent" : "");
-                f.setText(time + status);
-                f.setTextColor(Design.DIM2);
-                f.setTextSize(10f);
+                LinearLayout f = new LinearLayout(MainActivity.this);
+                f.setOrientation(LinearLayout.HORIZONTAL);
+                f.setGravity(Gravity.CENTER_VERTICAL);
                 f.setPadding(dp(18), dp(2), dp(18), dp(8));
-                f.setGravity(r.m.incoming ? Gravity.START : Gravity.END);
+                LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                flp.gravity = r.m.incoming ? Gravity.START : Gravity.END;
+                f.setLayoutParams(flp);
+
+                TextView time = new TextView(MainActivity.this);
+                time.setText(clock(r.m.date));
+                time.setTextColor(Design.DIM2);
+                time.setTextSize(10f);
+                f.addView(time);
+
+                if (!r.m.incoming) {
+                    int ic = 0; int tint = 0; String label = null; int labelColor = Design.DIM2;
+                    if ("posting".equals(r.m.status)) { ic = R.drawable.ic_ring; tint = Design.ACCENT; label = "Posting to chain…"; labelColor = Design.ACCENT; }
+                    else if ("failed".equals(r.m.status)) { ic = R.drawable.ic_close; tint = Design.RED; label = "Failed — retry from Outbox"; labelColor = Design.RED; }
+                    else if ("confirmed".equals(r.m.status)) { ic = R.drawable.ic_check; tint = Design.GREEN; label = "Confirmed"; }
+                    else if ("sent".equals(r.m.status)) {
+                        ic = R.drawable.ic_chain; tint = Design.DIM2;
+                        label = "On-chain" + (r.m.sentblock > 0 ? " · blk " + String.format(java.util.Locale.ENGLISH, "%,d", r.m.sentblock) : "");
+                    }
+                    if (label != null) {
+                        TextView dotSep = new TextView(MainActivity.this);
+                        dotSep.setText(" · "); dotSep.setTextColor(Design.DIM2); dotSep.setTextSize(10f);
+                        f.addView(dotSep);
+                        f.addView(icon(ic, tint, 11));
+                        TextView st = new TextView(MainActivity.this);
+                        st.setText(label); st.setTextColor(labelColor); st.setTextSize(10f);
+                        st.setPadding(dp(3), 0, 0, 0);
+                        f.addView(st);
+                    }
+                }
                 v.addView(f);
             }
         }
@@ -763,14 +1130,14 @@ public class MainActivity extends AppCompatActivity {
     private void conversationMenu(String otherKey, String hashref) {
         androidx.appcompat.widget.PopupMenu m = new androidx.appcompat.widget.PopupMenu(this, container);
         m.getMenu().add(0, 1, 0, db.contactName(otherKey) == null ? "Add to contacts" : "View contact key");
-        m.getMenu().add(0, 2, 1, "Delete conversation");
+        m.getMenu().add(0, 2, 1, "Delete thread");
         m.setOnMenuItemClickListener(it -> {
             if (it.getItemId() == 1) {
                 if (db.contactName(otherKey) == null) addContactDialog(otherKey);
                 else { copy(otherKey, "Mail key"); toast("Key copied."); }
             } else {
-                new AlertDialog.Builder(this).setMessage("Delete this conversation from this device?")
-                        .setPositiveButton("Delete", (d, w) -> io.execute(() -> { db.deleteThread(hashref); ui.post(() -> { pop(); refreshTop(buildInbox()); }); }))
+                new AlertDialog.Builder(this).setMessage("Delete this thread from this device?")
+                        .setPositiveButton("Delete", (d, w) -> io.execute(() -> { db.deleteThread(hashref); ui.post(this::pop); }))
                         .setNegativeButton("Cancel", null).show();
             }
             return true;
@@ -778,48 +1145,186 @@ public class MainActivity extends AppCompatActivity {
         m.show();
     }
 
-    // ---- NEW CHAT ----
+    // ---- COMPOSE ----
 
-    private View buildNewChat() {
+    private View buildCompose(String prefillKey, String prefillSubject) {
         LinearLayout col = column();
-        col.addView(header("New message", true));
-        LinearLayout form = pad(column());
 
-        form.addView(label("To — paste a Mail key, scan, or pick a contact"));
-        final EditText to = input("0x… Mail key");
-        form.addView(to);
+        // top bar: close + title + Send
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setBackgroundColor(Design.SURFACE);
+        head.setPadding(dp(6), dp(10), dp(12), dp(10));
+        head.addView(iconBtn(R.drawable.ic_close, v -> pop()));
+        TextView t = new TextView(this);
+        t.setText("New message");
+        t.setTextColor(Design.TEXT); t.setTextSize(17f); t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setPadding(dp(6), 0, 0, 0);
+        t.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        head.addView(t);
 
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        TextView scan = textButton("⧉ Scan QR");
-        scan.setOnClickListener(v -> startScan(to));
-        TextView pick = textButton("Contacts");
-        pick.setOnClickListener(v -> pickContact(to));
-        actions.addView(scan); actions.addView(pick);
-        form.addView(actions);
+        final EditText to = new EditText(this);
+        final EditText subject = new EditText(this);
+        final EditText body = new EditText(this);
 
-        TextView start = accentButton("Start chat");
-        start.setOnClickListener(v -> {
+        LinearLayout sendBtn = new LinearLayout(this);
+        sendBtn.setOrientation(LinearLayout.HORIZONTAL);
+        sendBtn.setGravity(Gravity.CENTER_VERTICAL);
+        sendBtn.setBackground(Design.roundBg(this, Design.ACCENT, 15));
+        sendBtn.setPadding(dp(13), dp(6), dp(13), dp(6));
+        sendBtn.addView(icon(R.drawable.ic_send, Design.ON_ACCENT, 13));
+        TextView st = new TextView(this);
+        st.setText("Send"); st.setTextColor(Design.ON_ACCENT); st.setTextSize(13f); st.setTypeface(Typeface.DEFAULT_BOLD);
+        st.setPadding(dp(5), 0, 0, 0);
+        sendBtn.addView(st);
+        head.addView(sendBtn);
+        col.addView(head);
+
+        // To
+        LinearLayout toRow = fieldRow("To");
+        to.setHint("0x… Mail key");
+        styleFieldInput(to, true);
+        toRow.addView(to, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        toRow.addView(fieldChip(R.drawable.ic_scan, "Scan", v -> startScan(to)));
+        toRow.addView(fieldChip(R.drawable.ic_contacts, null, v -> pickContact(to)));
+        if (prefillKey != null) to.setText(prefillKey);
+        col.addView(toRow);
+        col.addView(hairline());
+
+        // Subject
+        LinearLayout subjRow = fieldRow("Subject");
+        subject.setHint("(optional — subjects make their own thread)");
+        styleFieldInput(subject, false);
+        subject.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        if (prefillSubject != null) subject.setText(prefillSubject);
+        subjRow.addView(subject, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        col.addView(subjRow);
+        col.addView(hairline());
+
+        // Body
+        body.setHint("Write your message…");
+        body.setHintTextColor(Design.DIM2);
+        body.setTextColor(Design.TEXT);
+        body.setTextSize(14.5f);
+        body.setGravity(Gravity.TOP);
+        body.setBackground(null);
+        body.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        body.setPadding(dp(16), dp(12), dp(16), dp(12));
+        col.addView(body, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        // attach row
+        col.addView(hairline());
+        LinearLayout attachRow = new LinearLayout(this);
+        attachRow.setOrientation(LinearLayout.HORIZONTAL);
+        attachRow.setPadding(dp(14), dp(10), dp(14), dp(10));
+        LinearLayout photo = attachChip(R.drawable.ic_photo, "Photo");
+        photo.setOnClickListener(v -> {
             String k = acceptKeyShare(to.getText().toString());
-            if (!CommsIdentity.isValidPublicId(k)) { toast("That doesn't look like a valid Mail key."); return; }
-            pop();
-            push(buildConversation(k));
+            if (!CommsIdentity.isValidPublicId(k)) { toast("Enter a valid Mail key first."); return; }
+            imagePickContact = k; imagePickSubject = subject.getText().toString().trim();
+            imagePicker.launch("image/*");
         });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(16);
-        form.addView(start, lp);
+        LinearLayout funds = attachChip(R.drawable.ic_coin, "Send funds");
+        funds.setOnClickListener(v -> {
+            String k = acceptKeyShare(to.getText().toString());
+            if (!CommsIdentity.isValidPublicId(k)) { toast("Enter a valid Mail key first."); return; }
+            showSendFundsSheet(k, subject.getText().toString().trim());
+        });
+        attachRow.addView(photo);
+        View gap = new View(this);
+        attachRow.addView(gap, new LinearLayout.LayoutParams(dp(10), 1));
+        attachRow.addView(funds);
+        col.addView(attachRow);
 
-        ScrollView sv = new ScrollView(this); sv.addView(form);
-        col.addView(sv);
+        // delivery hint
+        col.addView(hairline());
+        LinearLayout hint = new LinearLayout(this);
+        hint.setOrientation(LinearLayout.HORIZONTAL);
+        hint.setBackgroundColor(Design.SURFACE);
+        hint.setPadding(dp(14), dp(9), dp(14), dp(11));
+        hint.addView(icon(R.drawable.ic_chain, Design.ACCENT, 13));
+        TextView ht = new TextView(this);
+        ht.setText("Delivered with the next block — usually 1–3 minutes. Your message waits in the Outbox until it's on-chain.");
+        ht.setTextColor(Design.DIM); ht.setTextSize(10.5f);
+        ht.setPadding(dp(7), 0, 0, 0);
+        hint.addView(ht, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        col.addView(hint);
+
+        sendBtn.setOnClickListener(v -> {
+            String k = acceptKeyShare(to.getText().toString());
+            String subj = subject.getText().toString().trim();
+            String text = body.getText().toString();
+            if (!CommsIdentity.isValidPublicId(k)) { toast("That doesn't look like a valid Mail key."); return; }
+            if (text.trim().isEmpty()) { toast("Write a message first."); return; }
+            doSend(sendBtn, k, subj, text, () -> { pop(); openConversation(k, subj); });
+        });
+
         return col;
+    }
+
+    private LinearLayout fieldRow(String label) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(16), dp(4), dp(12), dp(4));
+        TextView k = new TextView(this);
+        k.setText(label); k.setTextColor(Design.DIM); k.setTextSize(12f);
+        k.setWidth(dp(58));
+        row.addView(k);
+        return row;
+    }
+
+    private void styleFieldInput(EditText e, boolean mono) {
+        e.setHintTextColor(Design.DIM2);
+        e.setTextColor(Design.TEXT);
+        e.setTextSize(mono ? 12.5f : 14f);
+        if (mono) e.setTypeface(Typeface.MONOSPACE);
+        e.setBackground(null);
+        e.setSingleLine(true);
+        e.setPadding(0, dp(10), dp(8), dp(10));
+    }
+
+    private LinearLayout fieldChip(int iconRes, String label, View.OnClickListener click) {
+        LinearLayout chip = new LinearLayout(this);
+        chip.setOrientation(LinearLayout.HORIZONTAL);
+        chip.setGravity(Gravity.CENTER_VERTICAL);
+        chip.setBackground(Design.outlineBg(this, Design.ACCENT, 11));
+        chip.setPadding(dp(8), dp(3), dp(8), dp(3));
+        chip.addView(icon(iconRes, Design.ACCENT, 12));
+        if (label != null) {
+            TextView t = new TextView(this);
+            t.setText(label); t.setTextColor(Design.ACCENT); t.setTextSize(10.5f); t.setTypeface(Typeface.DEFAULT_BOLD);
+            t.setPadding(dp(4), 0, 0, 0);
+            chip.addView(t);
+        }
+        chip.setOnClickListener(click);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.leftMargin = dp(6);
+        chip.setLayoutParams(lp);
+        return chip;
+    }
+
+    private LinearLayout attachChip(int iconRes, String label) {
+        LinearLayout chip = new LinearLayout(this);
+        chip.setOrientation(LinearLayout.HORIZONTAL);
+        chip.setGravity(Gravity.CENTER_VERTICAL);
+        chip.setBackground(Design.roundBg(this, Design.SURFACE2, 14));
+        chip.setPadding(dp(11), dp(6), dp(11), dp(6));
+        chip.addView(icon(iconRes, Design.ACCENT, 13));
+        TextView t = new TextView(this);
+        t.setText(label); t.setTextColor(Design.ACCENT); t.setTextSize(11.5f); t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setPadding(dp(5), 0, 0, 0);
+        chip.addView(t);
+        return chip;
     }
 
     // ---- CONTACTS ----
 
     private View buildContacts() {
         LinearLayout col = column();
-        LinearLayout head = header("Contacts", true);
-        head.addView(iconBtn("＋", v -> addContactDialog(null)));
+        LinearLayout head = header("Contacts", false);
+        head.addView(iconBtn(R.drawable.ic_plus, v -> addContactDialog(null)));
         col.addView(head);
         RecyclerView rv = new RecyclerView(this);
         rv.setLayoutManager(new LinearLayoutManager(this));
@@ -844,10 +1349,10 @@ public class MainActivity extends AppCompatActivity {
                 TextView nm = new TextView(MainActivity.this); nm.setText(name); nm.setTextColor(Design.TEXT); nm.setTextSize(15f); nm.setTypeface(Typeface.DEFAULT_BOLD);
                 TextView kv = new TextView(MainActivity.this); kv.setText(shortKey(key)); kv.setTextColor(Design.DIM); kv.setTextSize(12f); kv.setTypeface(Typeface.MONOSPACE);
                 mid.addView(nm); mid.addView(kv); row.addView(mid);
-                row.setOnClickListener(v -> { pop(); push(buildConversation(key)); });
+                row.setOnClickListener(v -> push(buildCompose(key, null)));
                 row.setOnLongClickListener(v -> {
                     new AlertDialog.Builder(MainActivity.this).setMessage("Delete contact " + name + "?")
-                            .setPositiveButton("Delete", (d, w) -> io.execute(() -> { db.deleteContact(id); ui.post(() -> { contactNames = null; refreshTop(buildContacts()); }); }))
+                            .setPositiveButton("Delete", (d, w) -> io.execute(() -> { db.deleteContact(id); ui.post(() -> { contactNames = null; refreshFolderIfVisible(); }); }))
                             .setNegativeButton("Cancel", null).show();
                     return true;
                 });
@@ -862,20 +1367,11 @@ public class MainActivity extends AppCompatActivity {
 
     private View buildIdentity() {
         LinearLayout col = column();
-        col.addView(header("Your Mail key", true));
+        col.addView(header("Your key", false));
         LinearLayout form = pad(column());
         form.setGravity(Gravity.CENTER_HORIZONTAL);
 
         form.addView(avatar(myId, myName, 72));
-
-        final EditText nm = input("Your display name");
-        nm.setText(myName);
-        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        nlp.topMargin = dp(12);
-        form.addView(nm, nlp);
-        TextView saveName = textButton("Save name");
-        saveName.setOnClickListener(v -> { myName = nm.getText().toString().trim(); io.execute(() -> db.setMeta("myname", myName)); toast("Saved."); });
-        form.addView(saveName);
 
         if (myId != null) {
             Bitmap qr = QrUtil.qr(keyShare(), dp(200));
@@ -929,28 +1425,149 @@ public class MainActivity extends AppCompatActivity {
         return col;
     }
 
+    // ---- SETTINGS ----
+
+    private View buildSettings() {
+        LinearLayout col = column();
+        col.addView(header("Settings", false));
+        LinearLayout list = column();
+
+        list.addView(settingsGroup("Appearance"));
+        LinearLayout themeRow = settingsRow("Theme", "Paper by day, dark by night — your call");
+        LinearLayout seg = new LinearLayout(this);
+        seg.setOrientation(LinearLayout.HORIZONTAL);
+        seg.setBackground(Design.roundBg(this, Design.SURFACE2, 15));
+        seg.setPadding(dp(3), dp(3), dp(3), dp(3));
+        seg.addView(segOption("Paper", Design.LIGHT, () -> setTheme2("light")));
+        seg.addView(segOption("Dark", !Design.LIGHT, () -> setTheme2("dark")));
+        themeRow.addView(seg);
+        list.addView(themeRow);
+        list.addView(hairline());
+
+        list.addView(settingsGroup("Identity"));
+        LinearLayout nameRow = settingsRow("Display name", "Sent with every message");
+        TextView nv = new TextView(this);
+        nv.setText(myName.isEmpty() ? "(not set)" : myName);
+        nv.setTextColor(Design.DIM); nv.setTextSize(12.5f);
+        nameRow.addView(nv);
+        nameRow.addView(chev());
+        nameRow.setOnClickListener(v -> {
+            final EditText in = input("Your display name");
+            in.setText(myName);
+            new AlertDialog.Builder(this).setTitle("Display name").setView(in)
+                    .setPositiveButton("Save", (d, w) -> {
+                        myName = in.getText().toString().trim();
+                        io.execute(() -> db.setMeta("myname", myName));
+                        refreshFolderIfVisible();
+                    })
+                    .setNegativeButton("Cancel", null).show();
+        });
+        list.addView(nameRow);
+        list.addView(hairline());
+        LinearLayout keyRow = settingsRow("Your key & backup", "QR, export, restore");
+        keyRow.addView(chev());
+        keyRow.setOnClickListener(v -> showFolder(Folder.IDENTITY));
+        list.addView(keyRow);
+        list.addView(hairline());
+
+        list.addView(settingsGroup("About"));
+        LinearLayout helpRow = settingsRow("How delivery works", "Messages travel as coins — next block, ~1–3 min");
+        helpRow.addView(chev());
+        helpRow.setOnClickListener(v -> push(buildHelp()));
+        list.addView(helpRow);
+        list.addView(hairline());
+        LinearLayout verRow = settingsRow("Version", "Minima Mail v" + BuildConfig.VERSION_NAME);
+        list.addView(verRow);
+
+        ScrollView sv = new ScrollView(this); sv.addView(list);
+        col.addView(sv);
+        return col;
+    }
+
+    private void setTheme2(String theme) {
+        if (theme.equals(db.getMeta("theme", "light"))) return;
+        db.setMeta("theme", theme);
+        Design.load(theme);
+        recreate();
+    }
+
+    private TextView settingsGroup(String s) {
+        TextView t = new TextView(this);
+        t.setText(s.toUpperCase(java.util.Locale.ENGLISH));
+        t.setTextColor(Design.DIM2); t.setTextSize(10.5f); t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setLetterSpacing(0.08f);
+        t.setPadding(dp(16), dp(18), dp(16), dp(6));
+        return t;
+    }
+
+    private LinearLayout settingsRow(String title, String detail) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(16), dp(11), dp(16), dp(11));
+        LinearLayout grow = new LinearLayout(this);
+        grow.setOrientation(LinearLayout.VERTICAL);
+        grow.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView t = new TextView(this);
+        t.setText(title); t.setTextColor(Design.TEXT); t.setTextSize(14f);
+        grow.addView(t);
+        if (detail != null) {
+            TextView d = new TextView(this);
+            d.setText(detail); d.setTextColor(Design.DIM); d.setTextSize(11f);
+            d.setPadding(0, dp(1), 0, 0);
+            grow.addView(d);
+        }
+        row.addView(grow);
+        return row;
+    }
+
+    private ImageView chev() {
+        ImageView iv = icon(R.drawable.ic_chev, Design.DIM2, 14);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(14), dp(14));
+        lp.leftMargin = dp(8);
+        iv.setLayoutParams(lp);
+        return iv;
+    }
+
+    private TextView segOption(String label, boolean on, final Runnable click) {
+        TextView t = new TextView(this);
+        t.setText(label);
+        t.setTextSize(11.5f);
+        t.setPadding(dp(11), dp(4), dp(11), dp(4));
+        if (on) {
+            t.setTextColor(Design.ON_ACCENT);
+            t.setTypeface(Typeface.DEFAULT_BOLD);
+            t.setBackground(Design.roundBg(this, Design.ACCENT, 12));
+        } else {
+            t.setTextColor(Design.DIM);
+        }
+        t.setOnClickListener(v -> click.run());
+        return t;
+    }
+
     private View buildHelp() {
         LinearLayout col = column();
-        col.addView(header("Help", true));
+        col.addView(header("How delivery works", true));
         ScrollView sv = new ScrollView(this);
         TextView t = new TextView(this);
         t.setPadding(dp(16), dp(8), dp(16), dp(24));
         t.setTextColor(Design.DIM); t.setTextSize(13f); t.setLineSpacing(dp(4), 1f);
-        t.setText("Minima Mail is end-to-end encrypted on-chain messaging.\n\n" +
-                "• Your identity is a key derived from your Minima seed — recoverable on any device.\n\n" +
-                "• Messages are encrypted on your device and carried in a tiny on-chain coin to a shared address; " +
-                "only the recipient can decrypt. Sender, recipient and content are hidden on-chain.\n\n" +
-                "• Minima is feeless — a message costs only a negligible 0.000000001 Minima.\n\n" +
-                "• This is a native, in-app-encrypted network. It does NOT yet interoperate with the web ChainMail " +
-                "MiniDapp (which uses Maxima, absent from this node build). Native Mail users can message each other.");
+        t.setText("Minima Mail is on-chain email: end-to-end encrypted messages carried by the Minima blockchain itself.\n\n" +
+                "• Your identity is a key derived from your Minima seed — recoverable on any device that restores the same seed.\n\n" +
+                "• Each message is encrypted on your device and posted as a tiny coin to a shared address; only the recipient can decrypt it. Sender, recipient and content are hidden on-chain.\n\n" +
+                "• Delivery rides the chain: a message arrives with the next block — usually 1–3 minutes, sometimes longer. That's why Mail behaves like email, not instant chat. A message you send waits in the Outbox until it's on-chain, then moves to Sent; \"Confirmed\" means the chain has moved past its block.\n\n" +
+                "• The inbox line \"Checked block N\" tells you how fresh your view is — if the block is recent and there's no new mail, there is no new mail.\n\n" +
+                "• Minima is feeless — a message costs a negligible 0.000000001 MINIMA, locked at the shared address.\n\n" +
+                "• Subjects are optional. A blank subject keeps one running thread per contact; a subject starts its own thread, and replies stay in it — like email.\n\n" +
+                "• This is a native, in-app-encrypted network. It does NOT interoperate with the web ChainMail MiniDapp (which uses Maxima). Native Mail users can message each other, and the desktop minimaMail module speaks the same format.");
         sv.addView(t);
         col.addView(sv);
         return col;
     }
 
-    // ---- send ----
+    // ---- send (honest lifecycle: posting → sent → confirmed / failed) ----
 
-    private void doSend(final View btn, String toKey, String message, Runnable onOk) {
+    private void doSend(final View btn, String toKey, String subject, String message, Runnable onOk) {
         if (crypto == null) { toast("Still connecting to your node…"); return; }
         if (!CommsIdentity.isValidPublicId(toKey)) { toast("That doesn't look like a valid Mail key."); return; }
         if (message == null || message.trim().isEmpty()) return;
@@ -958,23 +1575,53 @@ public class MainActivity extends AppCompatActivity {
         btn.setEnabled(false);
         final MailMessage m = new MailMessage();
         m.frompublickey = myId; m.fromname = myName; m.topublickey = toKey;
-        m.subject = ""; m.message = message;
+        m.subject = subject == null ? "" : subject; m.message = message;
         m.randomid = MailText.randomId(); m.date = System.currentTimeMillis();
         m.incoming = false; m.read = true;
         m.payaddr = myPayaddr;
-        m.hashref = MailText.threadKey(myId, toKey, "");
+        m.status = "posting"; m.sentblock = chainBlock;
+        m.hashref = MailText.threadKey(myId, toKey, m.subject);
 
+        io.execute(() -> {                                   // appears in the thread + Outbox immediately
+            m.id = db.insert(m);
+            ui.post(() -> {
+                btn.setEnabled(true);
+                if (onOk != null) onOk.run();
+                reloadConversation(m.hashref);
+                postMessage(m);
+            });
+        });
+    }
+
+    /** Post an already-inserted message to the chain and keep its status honest. */
+    private void postMessage(final MailMessage m) {
         CommsTransport.send(node, crypto, m, new CommsTransport.SendCb() {
             @Override public void onSent() {
                 io.execute(() -> {
-                    m.status = "sent"; m.sentblock = chainBlock;
-                    db.insert(m);
-                    ui.post(() -> { btn.setEnabled(true); onOk.run(); });
+                    db.setStatus(m.id, "sent");
+                    db.setSentBlock(m.id, chainBlock);
+                    ui.post(() -> { reloadConversation(m.hashref); refreshFolderIfVisible(); });
                 });
             }
             @Override public void onFailed(String err) {
-                ui.post(() -> { btn.setEnabled(true); toast("Send failed: " + err); });
+                io.execute(() -> {
+                    db.setStatus(m.id, "failed");
+                    ui.post(() -> {
+                        toast("Send failed: " + err + " — kept in Outbox.");
+                        reloadConversation(m.hashref); refreshFolderIfVisible();
+                    });
+                });
             }
+        });
+    }
+
+    private void retrySend(final long id) {
+        if (crypto == null) { toast("Still connecting to your node…"); return; }
+        io.execute(() -> {
+            final MailMessage m = db.message(id);
+            if (m == null) return;
+            db.setStatus(id, "posting");
+            ui.post(() -> { refreshFolderIfVisible(); postMessage(m); });
         });
     }
 
@@ -987,7 +1634,9 @@ public class MainActivity extends AppCompatActivity {
         b.setPadding(dp(14), dp(9), dp(14), dp(9));
         b.setMaxWidth((int) (getResources().getDisplayMetrics().widthPixels * 0.75));
         b.setTextColor(m.incoming ? Design.TEXT : Design.ON_ACCENT);
-        b.setBackground(Design.roundBg(this, m.incoming ? Design.SURFACE2 : Design.ACCENT, 18));
+        b.setBackground(m.incoming && Design.LIGHT
+                ? Design.cardBg(this, Design.SURFACE2, 18)
+                : Design.roundBg(this, m.incoming ? Design.SURFACE2 : Design.ACCENT, 18));
         return b;
     }
 
@@ -997,14 +1646,20 @@ public class MainActivity extends AppCompatActivity {
         card.setPadding(dp(16), dp(12), dp(16), dp(12));
         card.setBackground(Design.roundBg(this, m.incoming ? Design.SURFACE2 : Design.ACCENT, 18));
         int fg = m.incoming ? Design.TEXT : Design.ON_ACCENT;
-        int sub = m.incoming ? Design.DIM : 0xCC000000;
+        int sub = m.incoming ? Design.DIM : (Design.ON_ACCENT & 0x00FFFFFF) | 0xCC000000;
+        LinearLayout headRow = new LinearLayout(this);
+        headRow.setOrientation(LinearLayout.HORIZONTAL);
+        headRow.setGravity(Gravity.CENTER_VERTICAL);
+        headRow.addView(icon(R.drawable.ic_coin, sub, 12));
         TextView head = new TextView(this);
-        head.setText(m.incoming ? ("💰  " + nameFor(m.frompublickey) + " sent you") : "💰  You sent");
+        head.setText(m.incoming ? (nameFor(m.frompublickey) + " sent you") : "You sent");
         head.setTextColor(sub); head.setTextSize(11f);
+        head.setPadding(dp(5), 0, 0, 0);
+        headRow.addView(head);
         TextView amt = new TextView(this);
         amt.setText(m.amount + "  " + (m.tokenname == null || m.tokenname.isEmpty() ? "MINIMA" : m.tokenname));
         amt.setTextColor(fg); amt.setTextSize(20f); amt.setTypeface(Typeface.DEFAULT_BOLD);
-        card.addView(head); card.addView(amt);
+        card.addView(headRow); card.addView(amt);
         if (m.message != null && !m.message.isEmpty()) {
             TextView memo = new TextView(this);
             memo.setText(m.message); memo.setTextColor(fg); memo.setTextSize(13f); memo.setPadding(0, dp(4), 0, 0);
@@ -1015,7 +1670,7 @@ public class MainActivity extends AppCompatActivity {
 
     // ---- send funds ----
 
-    private void showSendFundsSheet(final String otherKey) {
+    private void showSendFundsSheet(final String otherKey, final String subject) {
         if (crypto == null) { toast("Connect to your node first."); return; }
         final String known = db.contactPayaddr(otherKey);
         if (known == null) sendPayaddrReq(otherKey);   // try to auto-fetch their address in the background
@@ -1048,7 +1703,7 @@ public class MainActivity extends AppCompatActivity {
                     : "Auto-fills when they message you / are online. Or scan their QR, or paste their address.");
             hint.setTextColor(Design.DIM2); hint.setTextSize(11f); hint.setPadding(0, dp(4), 0, 0);
             box.addView(hint);
-            TextView scanAddr = textButton("⧉ Scan their QR for their address");
+            TextView scanAddr = textButton("Scan their QR for their address");
             scanAddr.setOnClickListener(v -> startAddrScan(addr));
             box.addView(scanAddr);
             if (myPayaddr.isEmpty()) fetchMyPayaddr();
@@ -1062,7 +1717,7 @@ public class MainActivity extends AppCompatActivity {
             ScrollView sv = new ScrollView(this); sv.addView(box);
             AlertDialog dlg = new AlertDialog.Builder(this).setTitle("Send funds to " + nameFor(otherKey)).setView(sv)
                     .setPositiveButton("Review", (d, w) ->
-                            trySendFunds(otherKey, sel[0], sel[1], sel[2], amt.getText().toString().trim(), addr.getText().toString().trim(), memo.getText().toString()))
+                            trySendFunds(otherKey, subject, sel[0], sel[1], sel[2], amt.getText().toString().trim(), addr.getText().toString().trim(), memo.getText().toString()))
                     .setNegativeButton("Cancel", null).create();
             dlg.setOnDismissListener(d -> { modalOpen = false; openPayAddrField = null; openPayContact = null; });
             modalOpen = true;
@@ -1070,7 +1725,7 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void trySendFunds(String otherKey, String tokenid, String tokenname, String balanceStr, String amountStr, String addr, String memo) {
+    private void trySendFunds(String otherKey, String subject, String tokenid, String tokenname, String balanceStr, String amountStr, String addr, String memo) {
         if (amountStr.isEmpty()) { toast("Enter an amount."); return; }
         java.math.BigDecimal amount, balance;
         try { amount = new java.math.BigDecimal(amountStr); balance = new java.math.BigDecimal(balanceStr); }
@@ -1087,7 +1742,7 @@ public class MainActivity extends AppCompatActivity {
         new AlertDialog.Builder(this)
                 .setTitle("Send " + amountStr + " " + tokenname + "?")
                 .setMessage("To " + nameFor(otherKey) + "\n" + payaddr + "\n\nThis sends real funds and cannot be undone.")
-                .setPositiveButton("Send", (d, w) -> doPay(otherKey, payaddr, tokenid, tokenname, amountStr, memo))
+                .setPositiveButton("Send", (d, w) -> doPay(otherKey, subject, payaddr, tokenid, tokenname, amountStr, memo))
                 .setNegativeButton("Cancel", null).show();
     }
 
@@ -1104,11 +1759,9 @@ public class MainActivity extends AppCompatActivity {
         return false;
     }
 
-    private void doPay(final String otherKey, String payaddr, final String tokenid, final String tokenname, final String amountStr, final String memo) {
-        final AlertDialog progress = new AlertDialog.Builder(this)
-                .setTitle("Sending " + amountStr + " " + tokenname)
-                .setMessage("Posting to the chain — this can take a few seconds…")
-                .setCancelable(false).create();
+    private void doPay(final String otherKey, final String subject, String payaddr, final String tokenid, final String tokenname, final String amountStr, final String memo) {
+        final AlertDialog progress = progressDialog("Sending " + amountStr + " " + tokenname,
+                "Posting to the chain — this can take a few seconds…");
         progress.show();
         node.cmd("send amount:" + amountStr + " address:" + payaddr + " tokenid:" + tokenid, new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
@@ -1117,12 +1770,12 @@ public class MainActivity extends AppCompatActivity {
                 JSONObject r = j.optJSONObject("response");
                 final String txid = r != null ? r.optString("txpowid", "") : "";
                 // The funds have left — record it locally (shows the bubble) and confirm, then notify the recipient.
-                final MailMessage m = paymentMsg(otherKey, tokenid, tokenname, amountStr, memo, txid);
+                final MailMessage m = paymentMsg(otherKey, subject, tokenid, tokenname, amountStr, memo, txid);
                 io.execute(() -> {
-                    db.insert(m);
+                    m.id = db.insert(m);
                     ui.post(() -> {
                         safeDismiss(progress);
-                        reloadConversation(otherKey);
+                        reloadConversation(m.hashref);
                         payResult(true, "Sent " + amountStr + " " + tokenname + " to " + nameFor(otherKey) + ".", txid);
                     });
                 });
@@ -1135,22 +1788,23 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private MailMessage paymentMsg(String otherKey, String tokenid, String tokenname, String amountStr, String memo, String txid) {
+    private MailMessage paymentMsg(String otherKey, String subject, String tokenid, String tokenname, String amountStr, String memo, String txid) {
         MailMessage m = new MailMessage();
         m.type = "payment";
         m.frompublickey = myId; m.fromname = myName; m.topublickey = otherKey;
+        m.subject = subject == null ? "" : subject;
         m.message = memo == null ? "" : memo;
         m.amount = amountStr; m.tokenid = tokenid; m.tokenname = tokenname; m.txpowid = txid;
         m.payaddr = myPayaddr;
         m.randomid = MailText.randomId(); m.date = System.currentTimeMillis();
         m.incoming = false; m.read = true; m.status = "sent"; m.sentblock = chainBlock;
-        m.hashref = MailText.threadKey(myId, otherKey, "");
+        m.hashref = MailText.threadKey(myId, otherKey, m.subject);
         return m;
     }
 
     private void payResult(boolean ok, String message, String txid) {
         AlertDialog.Builder b = new AlertDialog.Builder(this)
-                .setTitle(ok ? "✓ Payment sent" : "Payment failed")
+                .setTitle(ok ? "Payment sent" : "Payment failed")
                 .setMessage(message + (ok && txid != null && !txid.isEmpty() ? "\n\nTx: " + shortKey(txid) : ""))
                 .setPositiveButton("OK", null);
         if (ok && txid != null && !txid.isEmpty()) b.setNeutralButton("Copy tx id", (d, w) -> { copy(txid, "Tx id"); toast("Copied."); });
@@ -1161,31 +1815,6 @@ public class MainActivity extends AppCompatActivity {
 
     private AlertDialog progressDialog(String title, String msg) {
         return new AlertDialog.Builder(this).setTitle(title).setMessage(msg).setCancelable(false).create();
-    }
-
-    private void showEmojiPicker(final EditText box) {
-        final List<String> emojis = Emojis.list();
-        RecyclerView rv = new RecyclerView(this);
-        rv.setLayoutManager(new androidx.recyclerview.widget.GridLayoutManager(this, 8));
-        rv.setBackgroundColor(Design.SURFACE);
-        rv.setAdapter(new RecyclerView.Adapter<RecyclerView.ViewHolder>() {
-            @NonNull @Override public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup p, int t) {
-                TextView cell = new TextView(MainActivity.this);
-                cell.setTextSize(24f); cell.setGravity(Gravity.CENTER);
-                int pad = dp(6); cell.setPadding(pad, pad, pad, pad);
-                cell.setLayoutParams(new RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                return new RecyclerView.ViewHolder(cell) {};
-            }
-            @Override public void onBindViewHolder(@NonNull RecyclerView.ViewHolder h, int pos) {
-                final String e = emojis.get(pos);
-                ((TextView) h.itemView).setText(e);
-                h.itemView.setOnClickListener(v -> box.append(e));
-            }
-            @Override public int getItemCount() { return emojis.size(); }
-        });
-        LinearLayout wrap = new LinearLayout(this);
-        wrap.addView(rv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(360)));
-        new AlertDialog.Builder(this).setTitle("Emoji").setView(wrap).setPositiveButton("Done", null).show();
     }
 
     private byte[] readBytes(Uri uri) {
@@ -1199,7 +1828,7 @@ public class MainActivity extends AppCompatActivity {
 
     // ---- images ----
 
-    private void sendImage(final String otherKey, final Uri uri) {
+    private void sendImage(final String otherKey, final String subject, final Uri uri) {
         if (crypto == null) { toast("Connect to your node first."); return; }
         final AlertDialog progress = progressDialog("Sending image", "Compressing + posting to the chain…");
         progress.show();
@@ -1207,34 +1836,44 @@ public class MainActivity extends AppCompatActivity {
             try {
                 byte[] raw = readBytes(uri);
                 MailMessage m = (raw != null && raw.length <= 16000)
-                        ? imageMsg(otherKey, raw)                                              // keep original (GIF animated, PNG alpha)
-                        : imageMsg(otherKey, Images.compressToFit(MainActivity.this, uri, 15000)); // else shrink to JPEG
+                        ? imageMsg(otherKey, subject, raw)                                              // keep original (GIF animated, PNG alpha)
+                        : imageMsg(otherKey, subject, Images.compressToFit(MainActivity.this, uri, 15000)); // else shrink to JPEG
                 if (m == null) { ui.post(() -> { safeDismiss(progress); toast("Couldn't read that image."); }); return; }
                 String blob = crypto.seal(otherKey, m.toWire());            // seal ONCE, then size-check + send
                 if (blob.length() / 2 > 47000) {                            // too big once sealed → compress harder
-                    MailMessage m2 = imageMsg(otherKey, Images.compressToFit(MainActivity.this, uri, 9000));
+                    MailMessage m2 = imageMsg(otherKey, subject, Images.compressToFit(MainActivity.this, uri, 9000));
                     if (m2 != null) { m = m2; blob = crypto.seal(otherKey, m.toWire()); }
                 }
                 if (blob.length() / 2 > 49000) { ui.post(() -> { safeDismiss(progress); toast("Image too large to send on-chain."); }); return; }
                 final MailMessage msg = m;
-                CommsTransport.sendBlob(node, blob, new CommsTransport.SendCb() {
-                    @Override public void onSent() { io.execute(() -> { db.insert(msg); ui.post(() -> { safeDismiss(progress); reloadConversation(otherKey); }); }); }
-                    @Override public void onFailed(String e) { ui.post(() -> { safeDismiss(progress); toast("Send failed: " + e); }); }
+                msg.id = db.insert(msg);                                     // in the thread + Outbox as "posting"
+                final String sealed = blob;
+                ui.post(() -> { safeDismiss(progress); reloadConversation(msg.hashref); refreshFolderIfVisible(); });
+                CommsTransport.sendBlob(node, sealed, new CommsTransport.SendCb() {
+                    @Override public void onSent() { io.execute(() -> {
+                        db.setStatus(msg.id, "sent"); db.setSentBlock(msg.id, chainBlock);
+                        ui.post(() -> { reloadConversation(msg.hashref); refreshFolderIfVisible(); });
+                    }); }
+                    @Override public void onFailed(String e) { io.execute(() -> {
+                        db.setStatus(msg.id, "failed");
+                        ui.post(() -> { toast("Image send failed: " + e + " — kept in Outbox."); reloadConversation(msg.hashref); refreshFolderIfVisible(); });
+                    }); }
                 });
             } catch (Throwable t) { ui.post(() -> { safeDismiss(progress); toast("Image send failed."); }); }
         });
     }
 
-    private MailMessage imageMsg(String otherKey, byte[] jpeg) {
+    private MailMessage imageMsg(String otherKey, String subject, byte[] jpeg) {
         if (jpeg == null) return null;
         MailMessage m = new MailMessage();
         m.type = "image";
         m.image = android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP);
         m.frompublickey = myId; m.fromname = myName; m.topublickey = otherKey;
+        m.subject = subject == null ? "" : subject;
         m.message = ""; m.payaddr = myPayaddr;
         m.randomid = MailText.randomId(); m.date = System.currentTimeMillis();
-        m.incoming = false; m.read = true; m.status = "sent"; m.sentblock = chainBlock;
-        m.hashref = MailText.threadKey(myId, otherKey, "");
+        m.incoming = false; m.read = true; m.status = "posting"; m.sentblock = chainBlock;
+        m.hashref = MailText.threadKey(myId, otherKey, m.subject);
         return m;
     }
 
@@ -1255,7 +1894,7 @@ public class MainActivity extends AppCompatActivity {
             try {
                 byte[] bytes = android.util.Base64.decode(m.image, android.util.Base64.NO_WRAP);
                 if (isGif(bytes)) {                                     // animated → decode fresh, don't cache
-                    android.graphics.drawable.Drawable d = decodeImage(m.image);
+                    Drawable d = decodeImage(m.image);
                     if (d != null) ui.post(() -> {
                         iv.setImageDrawable(d);
                         if (d instanceof android.graphics.drawable.AnimatedImageDrawable) ((android.graphics.drawable.AnimatedImageDrawable) d).start();
@@ -1272,7 +1911,7 @@ public class MainActivity extends AppCompatActivity {
     private static boolean isGif(byte[] b) { return b != null && b.length > 3 && b[0] == 'G' && b[1] == 'I' && b[2] == 'F'; }
 
     private void showFullImage(String b64) {
-        android.graphics.drawable.Drawable d = decodeImage(b64);
+        Drawable d = decodeImage(b64);
         if (d == null) return;
         ImageView iv = new ImageView(this);
         iv.setImageDrawable(d);
@@ -1283,7 +1922,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /** Decode a base64 image to a Drawable — animates GIFs, keeps PNG alpha, falls back to a bitmap. */
-    private android.graphics.drawable.Drawable decodeImage(String b64) {
+    private Drawable decodeImage(String b64) {
         try {
             byte[] bytes = android.util.Base64.decode(b64, android.util.Base64.NO_WRAP);
             try {
@@ -1385,8 +2024,15 @@ public class MainActivity extends AppCompatActivity {
                     for (MailMessage m : db.thread(t.hashref)) {
                         JSONObject o = new JSONObject();
                         o.put("hashref", m.hashref); o.put("fromname", m.fromname); o.put("from", m.frompublickey);
-                        o.put("to", m.topublickey); o.put("message", m.message); o.put("randomid", m.randomid);
+                        o.put("to", m.topublickey); o.put("subject", m.subject == null ? "" : m.subject);
+                        o.put("message", m.message); o.put("randomid", m.randomid);
                         o.put("incoming", m.incoming); o.put("read", m.read); o.put("date", m.date); o.put("status", m.status);
+                        o.put("type", m.type == null ? "text" : m.type);
+                        if ("payment".equals(m.type)) {
+                            o.put("amount", m.amount); o.put("tokenid", m.tokenid);
+                            o.put("tokenname", m.tokenname); o.put("txpowid", m.txpowid);
+                        }
+                        if ("image".equals(m.type)) o.put("image", m.image == null ? "" : m.image);
                         msgs.put(o);
                     }
                 root.put("messages", msgs);
@@ -1419,41 +2065,36 @@ public class MainActivity extends AppCompatActivity {
                     MailMessage m = new MailMessage();
                     m.hashref = o.optString("hashref"); m.fromname = o.optString("fromname");
                     m.frompublickey = o.optString("from"); m.topublickey = o.optString("to");
+                    m.subject = o.optString("subject", "");
                     m.message = o.optString("message"); m.randomid = o.optString("randomid");
                     m.incoming = o.optBoolean("incoming"); m.read = o.optBoolean("read"); m.date = o.optLong("date"); m.status = o.optString("status", "");
+                    m.type = o.optString("type", "text");
+                    m.amount = o.optString("amount", ""); m.tokenid = o.optString("tokenid", "");
+                    m.tokenname = o.optString("tokenname", ""); m.txpowid = o.optString("txpowid", "");
+                    m.image = o.optString("image", "");
                     db.insert(m);
                 }
-                ui.post(() -> { contactNames = null; adoptIdentity(restored); toast("Restored."); showInbox(); requestScan(); });
+                ui.post(() -> { contactNames = null; adoptIdentity(restored); toast("Restored."); showFolder(Folder.INBOX); requestScan(); });
             } catch (Exception e) { ui.post(() -> toast("Restore failed — wrong passphrase or bad file.")); }
         });
     }
 
-    // ---- menu / dialogs ----
-
-    private void showMenu(View anchor) {
-        androidx.appcompat.widget.PopupMenu m = new androidx.appcompat.widget.PopupMenu(this, anchor);
-        m.getMenu().add(0, 1, 0, "Contacts");
-        m.getMenu().add(0, 4, 1, "Archived");
-        m.getMenu().add(0, 2, 2, "Your Mail key");
-        m.getMenu().add(0, 3, 3, "Help");
-        m.setOnMenuItemClickListener(it -> {
-            switch (it.getItemId()) {
-                case 1: push(buildContacts()); return true;
-                case 2: push(buildIdentity()); return true;
-                case 3: push(buildHelp()); return true;
-                case 4: push(buildArchived()); return true;
-                default: return false;
-            }
-        });
-        m.show();
-    }
+    // ---- dialogs ----
 
     private void addContactDialog(String prefillKey) {
         LinearLayout box = pad(column());
         final EditText name = input("Name");
         final EditText key = input("0x… their Mail key");
         if (prefillKey != null) key.setText(prefillKey);
-        TextView scan = textButton("⧉ Scan QR");
+        LinearLayout scan = new LinearLayout(this);
+        scan.setOrientation(LinearLayout.HORIZONTAL);
+        scan.setGravity(Gravity.CENTER_VERTICAL);
+        scan.setPadding(dp(4), dp(10), dp(8), dp(6));
+        scan.addView(icon(R.drawable.ic_scan, Design.ACCENT, 14));
+        TextView stext = new TextView(this);
+        stext.setText("Scan QR"); stext.setTextColor(Design.ACCENT); stext.setTextSize(13f);
+        stext.setPadding(dp(6), 0, 0, 0);
+        scan.addView(stext);
         scan.setOnClickListener(v -> startScan(key));
         box.addView(label("Name")); box.addView(name);
         box.addView(label("Mail key")); box.addView(key); box.addView(scan);
@@ -1461,7 +2102,7 @@ public class MainActivity extends AppCompatActivity {
                 .setPositiveButton("Add", (d, w) -> {
                     String n = name.getText().toString().trim(), k = acceptKeyShare(key.getText().toString());
                     if (n.isEmpty() || !CommsIdentity.isValidPublicId(k)) { toast("Enter a name and a valid Mail key."); return; }
-                    io.execute(() -> { db.addContact(n, k); ui.post(() -> { contactNames = null; View top = stack.peek(); if (top != null && top.getTag() instanceof String) refreshTop(buildConversation(k)); }); });
+                    io.execute(() -> { db.addContact(n, k); ui.post(() -> { contactNames = null; refreshFolderIfVisible(); }); });
                 })
                 .setNegativeButton("Cancel", null).show();
     }
@@ -1497,7 +2138,7 @@ public class MainActivity extends AppCompatActivity {
             android.app.Notification n = new androidx.core.app.NotificationCompat.Builder(this, CH)
                     .setSmallIcon(android.R.drawable.ic_dialog_email)
                     .setContentTitle("Minima Mail")
-                    .setContentText(count == 1 ? "New message" : count + " new messages")
+                    .setContentText(count == 1 ? "New mail" : count + " new messages")
                     .setAutoCancel(true).build();
             NotificationManagerCompat.from(this).notify(42, n);
         } catch (Exception ignored) {}
@@ -1523,27 +2164,46 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout column() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.VERTICAL); return l; }
     private LinearLayout pad(LinearLayout l) { int p = dp(16); l.setPadding(p, p, p, p); return l; }
 
+    /** Folder header: hamburger (root folders) or back (pushed screens) + title. */
     private LinearLayout header(String title, boolean back) {
         LinearLayout h = new LinearLayout(this);
         h.setOrientation(LinearLayout.HORIZONTAL);
         h.setGravity(Gravity.CENTER_VERTICAL);
         h.setBackgroundColor(Design.SURFACE);
         h.setPadding(dp(8), dp(12), dp(8), dp(12));
-        if (back) h.addView(iconBtn("‹", v -> pop()));
+        if (back) {
+            h.addView(iconBtn(R.drawable.ic_back, v -> pop()));
+        } else {
+            ImageView burger = iconBtn(R.drawable.ic_menu, v -> drawer.openDrawer(Gravity.START));
+            h.addView(burger);
+        }
         TextView t = new TextView(this);
-        t.setText(title); t.setTextColor(back ? Design.TEXT : Design.ACCENT); t.setTextSize(20f); t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setText(title); t.setTextColor(Design.TEXT); t.setTextSize(19f); t.setTypeface(Typeface.DEFAULT_BOLD);
         t.setPadding(dp(8), 0, 0, 0);
         t.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         h.addView(t);
         return h;
     }
 
-    private TextView iconBtn(String glyph, View.OnClickListener click) {
-        TextView t = new TextView(this);
-        t.setText(glyph); t.setTextColor(Design.ACCENT); t.setTextSize(22f);
-        t.setPadding(dp(12), dp(4), dp(12), dp(4));
-        t.setOnClickListener(click);
-        return t;
+    /** A tinted vector icon. */
+    private ImageView icon(int res, int tint, int sizeDp) {
+        ImageView iv = new ImageView(this);
+        iv.setImageResource(res);
+        iv.setColorFilter(tint);
+        iv.setLayoutParams(new LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)));
+        return iv;
+    }
+
+    /** A padded, tappable icon button for headers/bars. */
+    private ImageView iconBtn(int res, View.OnClickListener click) {
+        ImageView iv = new ImageView(this);
+        iv.setImageResource(res);
+        iv.setColorFilter(Design.DIM);
+        int p = dp(10);
+        iv.setPadding(p, p, p, p);
+        iv.setLayoutParams(new LinearLayout.LayoutParams(dp(42), dp(42)));
+        if (click != null) iv.setOnClickListener(click);
+        return iv;
     }
 
     private TextView label(String s) {
@@ -1557,7 +2217,7 @@ public class MainActivity extends AppCompatActivity {
         EditText e = new EditText(this);
         e.setHint(hint); e.setHintTextColor(Design.DIM2); e.setTextColor(Design.TEXT); e.setTextSize(14f);
         e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        e.setBackground(Design.roundBg(this, Design.SURFACE, 10));
+        e.setBackground(Design.cardBg(this, Design.SURFACE, 10));
         int p = dp(12); e.setPadding(p, p, p, p);
         return e;
     }
@@ -1581,9 +2241,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView accentOutlineButton(String s) {
         TextView b = new TextView(this);
         b.setText(s); b.setTextColor(Design.ACCENT); b.setTextSize(14f);
-        GradientDrawable d = new GradientDrawable();
-        d.setCornerRadius(dp(10)); d.setStroke(dp(1), Design.ACCENT); d.setColor(0x00000000);
-        b.setBackground(d);
+        b.setBackground(Design.outlineBg(this, Design.ACCENT, 10));
         b.setPadding(dp(14), dp(10), dp(14), dp(10));
         return b;
     }
@@ -1609,8 +2267,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private String previewText(MailMessage t) {
-        if ("image".equals(t.type)) return "🖼 Photo";
-        if ("payment".equals(t.type)) return "💰 " + t.amount + " " + (t.tokenname == null || t.tokenname.isEmpty() ? "MINIMA" : t.tokenname);
+        if ("image".equals(t.type)) return "Photo";
+        if ("payment".equals(t.type)) return t.amount + " " + (t.tokenname == null || t.tokenname.isEmpty() ? "MINIMA" : t.tokenname)
+                + (t.message == null || t.message.isEmpty() ? "" : " — " + oneLine(t.message));
         return oneLine(t.message);
     }
 
@@ -1646,7 +2305,7 @@ public class MainActivity extends AppCompatActivity {
         return new java.text.SimpleDateFormat("d MMM", java.util.Locale.ENGLISH).format(new java.util.Date(ms));
     }
 
-    private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+    private int dp(int v) { return Design.dp(this, v); }
 
     private void copy(String text, String label) {
         ((ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText(label, text));

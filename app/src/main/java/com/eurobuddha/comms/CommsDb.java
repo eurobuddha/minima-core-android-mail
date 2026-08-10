@@ -48,8 +48,8 @@ public class CommsDb extends SQLiteOpenHelper {
 
     // ----- messages -----
 
-    /** Insert; returns true if NEW (false if this (hashref, randomid) was already stored). Idempotent. */
-    public boolean insert(MailMessage m) {
+    /** Insert; returns the new row id, or -1 if this (hashref, randomid) was already stored. Idempotent. */
+    public long insert(MailMessage m) {
         ContentValues v = new ContentValues();
         v.put("hashref", m.hashref); v.put("fromname", m.fromname);
         v.put("frompublickey", m.frompublickey); v.put("topublickey", m.topublickey);
@@ -58,8 +58,7 @@ public class CommsDb extends SQLiteOpenHelper {
         v.put("status", m.status); v.put("sentblock", m.sentblock);
         v.put("type", m.type); v.put("amount", m.amount); v.put("tokenid", m.tokenid);
         v.put("tokenname", m.tokenname); v.put("txpowid", m.txpowid); v.put("image", m.image);
-        long rid = getWritableDatabase().insertWithOnConflict(MSG, null, v, SQLiteDatabase.CONFLICT_IGNORE);
-        return rid != -1;
+        return getWritableDatabase().insertWithOnConflict(MSG, null, v, SQLiteDatabase.CONFLICT_IGNORE);
     }
 
     /** One row per thread = its latest message (SQLite bare-columns picks the MAX(date) row), newest first. */
@@ -73,6 +72,39 @@ public class CommsDb extends SQLiteOpenHelper {
     public List<MailMessage> thread(String hashref) {
         return query("SELECT id,hashref,fromname,frompublickey,topublickey,subject,message,randomid," +
                 "incoming,read,date,status,sentblock,type,amount,tokenid,tokenname,txpowid,image FROM " + MSG + " WHERE hashref=? ORDER BY date ASC", new String[]{hashref});
+    }
+
+    private static final String COLS = "id,hashref,fromname,frompublickey,topublickey,subject,message,randomid," +
+            "incoming,read,date,status,sentblock,type,amount,tokenid,tokenname,txpowid,image";
+
+    /** Outbox: outgoing messages that have NOT reached the chain — still posting, or failed. */
+    public List<MailMessage> outbox() {
+        return query("SELECT " + COLS + " FROM " + MSG +
+                " WHERE incoming=0 AND status IN ('posting','failed') ORDER BY date DESC", null);
+    }
+
+    /** Sent: outgoing messages the node accepted (on-chain or confirmed), newest first. */
+    public List<MailMessage> sent() {
+        return query("SELECT " + COLS + " FROM " + MSG +
+                " WHERE incoming=0 AND status IN ('sent','confirmed') ORDER BY date DESC", null);
+    }
+
+    /** Drawer badge: how many messages are stuck in the outbox. */
+    public int outboxCount() {
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT COUNT(*) FROM " + MSG + " WHERE incoming=0 AND status IN ('posting','failed')", null);
+        try { return c.moveToFirst() ? c.getInt(0) : 0; } finally { c.close(); }
+    }
+
+    /** One message by row id (for outbox retry). */
+    public MailMessage message(long id) {
+        List<MailMessage> l = query("SELECT " + COLS + " FROM " + MSG + " WHERE id=?", new String[]{String.valueOf(id)});
+        return l.isEmpty() ? null : l.get(0);
+    }
+
+    public void setSentBlock(long id, long block) {
+        ContentValues v = new ContentValues(); v.put("sentblock", block);
+        getWritableDatabase().update(MSG, v, "id=?", new String[]{String.valueOf(id)});
     }
 
     public int unreadCount() {

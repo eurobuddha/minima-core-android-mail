@@ -3,15 +3,22 @@
 A build map for the native **Minima Mail** app (see `README.md` for the user-facing overview). On-chain encrypted
 messenger; the node is a dumb transport (no Maxima/MDS/server).
 
-## Screens
+## Screens (0.5.0 — email shell, chat heart)
 
-- **Inbox** — list of conversations (latest message + unread badge), sorted by recency; excludes archived. Tap → Thread.
-- **Thread** — a conversation: day-grouped message bubbles (text / image / payment), a composer (`＋` → text, image,
-  send-funds), and a thread `⋮` menu (rename · archive · delete).
-- **Contacts** — known `publicId`s with names; right-click/long-press to rename or delete; **＋ add** via QR scan or
-  pasted id.
-- **Archived** — archived conversations (kept off the inbox).
-- **Settings / Help** — identity (your `publicId` + QR), passphrase **backup / restore**, "how it works".
+Drawer navigation: **Inbox · Outbox · Sent · Archive · Contacts · Your key · Settings.**
+
+- **Inbox** — email rows (sender+time / subject / snippet; unread = bold + orange dot), a freshness line
+  ("Checked block N · Xm ago", pull-to-refresh), FAB → Compose. One row per (contact, subject) thread.
+- **Outbox** — outgoing messages not yet on-chain: *Posting…* or *Failed* (+ Retry, which re-seals+re-posts).
+- **Sent** — on-chain/confirmed outgoing messages with their block numbers.
+- **Compose** — To (paste / QR / contact picker) · optional Subject · Body; attach chips (photo, send funds);
+  the delivery hint ("next block, ~1–3 min") is pinned at the bottom.
+- **Thread** — bubbles kept: day-grouped text/image/payment bubbles; subject as the title; per-message
+  status line under sent bubbles (ring *Posting* → chain *On-chain · blk N* → check *Confirmed*).
+- **Contacts / Your key / Settings** — contacts as before; identity QR + backup/restore; Settings holds the
+  theme toggle (paper/dark), display name, and "How delivery works".
+
+All glyphs are a custom VectorDrawable set (24-grid, 1.7px rounded strokes) — no emoji or stock icons.
 
 ## Identity & crypto (the core)
 
@@ -42,5 +49,8 @@ requests can't drain coins or WOTS key-uses.
 
 ## Design system
 
-`MailDesign` token engine (dark default + light toggle): near-black ground, hairline-bordered cards, accent for CTAs;
-bundled sans + mono; monospace ids/addresses; QR keeps a white quiet-zone.
+`Design` token engine, two palettes behind one token set (`Design.load(theme)`, persisted in DB meta,
+`recreate()` on toggle): **light paper default** (warm paper ground `#FAF9F6`, white hairline-bordered
+cards, ink text) and the **family dark** (near-black `#0A0A0F`); Minima orange `#F7931A` accent in both;
+monospace ids/addresses; QR keeps a white quiet-zone. Status colours: green = on-chain/confirmed,
+accent = in-flight, red = failed.

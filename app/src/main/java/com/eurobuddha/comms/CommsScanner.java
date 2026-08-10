@@ -45,6 +45,9 @@ public final class CommsScanner {
         this.node = node; this.crypto = crypto; this.db = db; this.myId = myId; this.listener = listener;
     }
 
+    /** When the last scan finished (ms epoch; 0 = never) — for the "checked … ago" freshness line. */
+    public long lastScanEnd() { return lastScanEnd; }
+
     public void scan(final int chainBlock) {
         if (running) return;
         if (System.currentTimeMillis() - lastScanEnd < MIN_INTERVAL_MS) return;   // throttle
@@ -130,7 +133,7 @@ public final class CommsScanner {
 
             m.incoming = true; m.read = false;
             m.hashref = MailText.threadKey(m.frompublickey, m.topublickey, m.subject);
-            if (db.insert(m)) newCount++;
+            if (db.insert(m) != -1) newCount++;
         }
         return newCount;
     }

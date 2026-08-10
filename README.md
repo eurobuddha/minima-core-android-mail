@@ -21,12 +21,23 @@ wire types + sentinel + crypto).
 
 ## Features
 
-- **Chats & contacts** — threaded conversations, rename a chat/contact, delete, **archive** (+ Archived view).
+Since 0.5.0 the app is styled as **on-chain email** (delivery takes a block, so it behaves like email, not
+instant chat) while conversations keep familiar chat bubbles:
+
+- **Email shell** — drawer navigation (Inbox · Outbox · Sent · Archive · Contacts · Your key · Settings),
+  optional **subjects** (a subject = its own thread; blank = one running thread per contact — the wire
+  format and `threadKey` were always subject-aware, so old threads are untouched), a real **compose**
+  screen (To / Subject / Body), and a custom icon set (no emoji/stock glyphs).
+- **Honest delivery status** — sends land in the **Outbox** instantly as *Posting to chain…*, move to
+  Sent as *On-chain · block N*, then *Confirmed*; failures stay in the Outbox with one-tap **Retry**
+  instead of vanishing into a toast. The inbox shows *"Checked block N · Xm ago"* (pull-to-refresh),
+  and compose states up front that delivery rides the next block (~1–3 min).
+- **Themes** — light "paper" default + the family dark theme, one toggle in Settings (token engine).
 - **Message types** — text, images, and **in-chat payments** (with a payaddr request/reply handshake so you can send
   funds to a contact's own receive address, confirmed and irreversible).
-- **QR** — scan a `publicId` to add a contact (webcam/BarcodeDetector, no external lib), or show yours to be added.
+- **QR** — scan a `publicId` to add a contact, or show yours to be added.
 - **Backup / restore** — passphrase-encrypted backup (PBKDF2-HMAC-SHA256 + AES-256-GCM), byte-compatible with the
-  desktop module so a backup cross-restores.
+  desktop module so a backup cross-restores (0.5.0 additionally backs up subjects, payments and images).
 - OS notifications, day grouping, copyable receiving address.
 
 ## Build
@@ -43,7 +54,7 @@ post the transport coins).
 ## Releases
 
 Versioned APKs are published to the [PandaApps catalog](https://github.com/eurobuddha/minima-core-apks)
-(`apks.json`). Current: **v0.4.1**.
+(`apks.json`). Current: **v0.5.0**.
 
 The reusable crypto/transport layer lives in `com/eurobuddha/comms/` (`CommsIdentity`, sealed-box send/scan) and is
 shared, byte-for-byte, with the other native apps and the desktop minimaMail module.
