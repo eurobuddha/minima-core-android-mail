@@ -140,6 +140,10 @@ public class MainActivity extends AppCompatActivity {
         ls = Sodium.get();
         db = new CommsDb(this);
         Design.load(db.getMeta("theme", "light"));
+        // Reuse PandaPools: native dialogs follow the selected app palette, not the system mode.
+        getDelegate().setLocalNightMode(!Design.LIGHT
+                ? androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_YES
+                : androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_NO);
         myName = db.getMeta("myname", "");
         myPayaddr = db.getMeta("mypayaddr", "");
 
