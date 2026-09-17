@@ -46,8 +46,13 @@ public final class SendPin {
         if (am.find()) { try { needTmp = new BigDecimal(am.group(1)); } catch (Exception ignored) {} }
         final BigDecimal need = needTmp;
 
-        // SENDABLE only — pending/locked/covenant coins can't fund a send.
-        node.cmd("coins relevant:true sendable:true tokenid:0x00", new NodeApi.Cb() {
+        // Ask for exactly the coins `send` will ACCEPT, or the pin is a trap. `sendable:true` is only
+        // Wallet.isAddressSimple (my own non-contract address); it says nothing about the mempool. In the node
+        // `coins` defaults checkmempool:false, so it still lists a coin already committed to an unconfirmed
+        // transaction, while `send` excludes those unconditionally (TxPoWMiner.mMiningCoins + the RAM
+        // mempool). Pinning fromaddress: to such a coin made the send die with "Insufficient funds.. you only
+        // have 0" until a node restart. Same defect, same fix as minimaCore Desktop 0.17.2 (sendpin.js).
+        node.cmd("coins relevant:true sendable:true checkmempool:true tokenid:0x00", new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
                 List<String> candidates = new ArrayList<>();
                 try {
