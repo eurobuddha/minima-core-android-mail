@@ -3,6 +3,8 @@ package com.eurobuddha.comms;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Matrix;
+import android.media.ExifInterface;
 import android.net.Uri;
 
 import java.io.ByteArrayOutputStream;
@@ -55,9 +57,34 @@ public final class Images {
         while (w / sample > reqMax || h / sample > reqMax) sample *= 2;
         BitmapFactory.Options o2 = new BitmapFactory.Options();
         o2.inSampleSize = sample;
+        Bitmap b;
         try (InputStream is = ctx.getContentResolver().openInputStream(uri)) {
-            return BitmapFactory.decodeStream(is, null, o2);
+            b = BitmapFactory.decodeStream(is, null, o2);
         }
+        return b == null ? null : applyExifOrientation(ctx, uri, b);
+    }
+
+    /** Camera JPEGs are stored sensor-side-up with an EXIF orientation tag; BitmapFactory ignores it and our
+     *  re-encode drops it, so bake the rotation/flip into the pixels. */
+    private static Bitmap applyExifOrientation(Context ctx, Uri uri, Bitmap b) {
+        int o;
+        try (InputStream is = ctx.getContentResolver().openInputStream(uri)) {
+            o = new ExifInterface(is).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+        } catch (Throwable t) {
+            return b;   // no/unreadable EXIF (PNG, WebP…) → as decoded
+        }
+        Matrix m = new Matrix();
+        switch (o) {
+            case ExifInterface.ORIENTATION_ROTATE_90:       m.postRotate(90); break;
+            case ExifInterface.ORIENTATION_ROTATE_180:      m.postRotate(180); break;
+            case ExifInterface.ORIENTATION_ROTATE_270:      m.postRotate(270); break;
+            case ExifInterface.ORIENTATION_FLIP_HORIZONTAL: m.postScale(-1, 1); break;
+            case ExifInterface.ORIENTATION_FLIP_VERTICAL:   m.postScale(1, -1); break;
+            case ExifInterface.ORIENTATION_TRANSPOSE:       m.postRotate(90); m.postScale(-1, 1); break;
+            case ExifInterface.ORIENTATION_TRANSVERSE:      m.postRotate(270); m.postScale(-1, 1); break;
+            default: return b;
+        }
+        return Bitmap.createBitmap(b, 0, 0, b.getWidth(), b.getHeight(), m, true);
     }
 
     private static Bitmap scaleToMax(Bitmap b, int maxDim) {
