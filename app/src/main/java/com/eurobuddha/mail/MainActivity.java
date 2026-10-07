@@ -73,7 +73,7 @@ import com.eurobuddha.comms.MailText;
 import com.eurobuddha.comms.NodeApi;
 import com.eurobuddha.comms.QrUtil;
 import com.eurobuddha.comms.Sodium;
-import org.minimarex.minimaapi.MinimaAPIMessages;
+import com.eurobuddha.minimaapi.MinimaAPIMessages;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -95,6 +95,9 @@ public class MainActivity extends AppCompatActivity {
     private CommsDb db;
     private CryptoProvider crypto;
     private CommsIdentity identity;
+    private IdentityStore identityStore;
+    private boolean identityBusy;
+    private AlertDialog identityPrompt;
     private CommsScanner scanner;
     private String myId, myName = "", myPayaddr = "";
     private boolean paired = false;
@@ -222,6 +225,7 @@ public class MainActivity extends AppCompatActivity {
 
     @Override protected void onDestroy() {
         super.onDestroy();
+        if (identityPrompt != null) identityPrompt.dismiss();
         ui.removeCallbacks(freshTick);
         if (notifyReceiver != null) try { unregisterReceiver(notifyReceiver); } catch (Exception ignored) {}
         if (node != null) node.onDestroy();
@@ -425,14 +429,41 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void setupIdentity() {
+        if (identityBusy || identity != null || isFinishing() || isDestroyed()) return;
+        identityBusy = true;
+        io.execute(() -> {
+            try {
+                if (identityStore == null) identityStore = new IdentityStore(this);
+                CommsIdentity saved = identityStore.load();
+                ui.post(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    if (saved != null) {
+                        identityBusy = false;
+                        adoptIdentity(saved); refreshFolderIfVisible(); requestScan();
+                    } else requestNodeIdentity();
+                });
+            } catch (Exception unreadable) {
+                ui.post(() -> {
+                    identityBusy = false;
+                    if (!isFinishing() && !isDestroyed())
+                        toast("Saved Mail identity could not be opened. Existing data was preserved; restore your identity backup from Your key.");
+                });
+            }
+        });
+    }
+
+    private void requestNodeIdentity() {
         node.cmd("vault action:seed", new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
+                if (isFinishing() || isDestroyed()) return;
                 JSONObject r = j.optJSONObject("response");
-                String ikm = r == null ? "" : r.optString("seed", r.optString("phrase", ""));
+                String ikm = r == null || !j.optBoolean("status", false) || r.optBoolean("locked", false)
+                        ? "" : r.optString("seed", r.optString("phrase", ""));
                 if (ikm.isEmpty()) askForSeed(); else deriveIdentity(ikm);
             }
             @Override public void onError(String m) {
-                if (NodeApi.ERR_NOT_ENABLED.equals(m)) { pairingBanner.setVisibility(View.VISIBLE); return; }
+                if (isFinishing() || isDestroyed()) return;
+                if (NodeApi.ERR_NOT_ENABLED.equals(m)) { identityBusy = false; pairingBanner.setVisibility(View.VISIBLE); return; }
                 askForSeed();
             }
         });
@@ -443,8 +474,11 @@ public class MainActivity extends AppCompatActivity {
             try {
                 byte[] seed = ikm.startsWith("0x") ? Hex.from(ikm) : ikm.getBytes(StandardCharsets.UTF_8);
                 CommsIdentity id = CommsIdentity.fromSeed(ls, seed);
-                ui.post(() -> { adoptIdentity(id); refreshFolderIfVisible(); requestScan(); });
-            } catch (Exception e) { ui.post(() -> toast("Identity error: " + e.getMessage())); }
+                java.util.Arrays.fill(seed, (byte)0);
+                if (identityStore == null) identityStore = new IdentityStore(this);
+                identityStore.save(id);
+                ui.post(() -> { identityBusy = false; if (isFinishing() || isDestroyed()) return; adoptIdentity(id); refreshFolderIfVisible(); requestScan(); });
+            } catch (Exception e) { ui.post(() -> { identityBusy = false; if (!isFinishing() && !isDestroyed()) toast("Identity could not be saved. Existing data was preserved."); }); }
         });
     }
 
@@ -495,15 +529,19 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void askForSeed() {
+        if (isFinishing() || isDestroyed() || (identityPrompt != null && identityPrompt.isShowing())) return;
         final EditText in = input("Your Minima seed phrase (any words / format)");
         in.setMinLines(3);
-        new AlertDialog.Builder(this)
+        identityPrompt = new AlertDialog.Builder(this)
                 .setTitle("Create your Mail identity")
-                .setMessage("Your Mail key is derived from your Minima seed (so it's recoverable). Paste your seed phrase once — it's used only to derive your key and is never stored.")
+                .setMessage("Your Mail key is derived from your Minima seed (so it's recoverable). Paste your seed phrase once. Only your derived Mail keys are stored, encrypted on this device; the seed phrase is never stored.")
                 .setView(in)
-                .setPositiveButton("Create", (d, w) -> { String s = in.getText().toString().trim(); if (!s.isEmpty()) deriveIdentity(s); })
-                .setNegativeButton("Restore from backup instead", (d, w) -> importLauncher.launch(new String[]{"application/json", "*/*"}))
-                .show();
+                .setPositiveButton("Create", (d, w) -> { String s = in.getText().toString().trim(); if (!s.isEmpty()) { identityBusy = true; deriveIdentity(s); } else identityBusy = false; })
+                .setNegativeButton("Restore from backup instead", (d, w) -> { identityBusy = false; importLauncher.launch(new String[]{"application/json", "*/*"}); })
+                .create();
+        identityPrompt.setOnCancelListener(d -> identityBusy = false);
+        identityPrompt.show();
+        identityPrompt.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
     }
 
     // ---- scanning ----
@@ -2082,10 +2120,13 @@ public class MainActivity extends AppCompatActivity {
                 byte[] plain = BackupCrypto.decrypt(pass, sb.toString());
                 JSONObject root = new JSONObject(new String(plain, StandardCharsets.UTF_8));
                 JSONObject id = root.getJSONObject("identity");
-                CommsIdentity restored = CommsIdentity.fromKeys(Hex.from(id.getString("boxPk")), Hex.from(id.getString("boxSk")),
-                        Hex.from(id.getString("signPk")), Hex.from(id.getString("signSk")));
-                myName = root.optString("name", "");
-                db.setMeta("myname", myName);
+                CommsIdentity restored = IdentityRecord.decode(id.toString());
+                if (identityStore == null) identityStore = new IdentityStore(this);
+                String restoredName = root.optString("name", "");
+                android.database.sqlite.SQLiteDatabase restoreDb = db.getWritableDatabase();
+                restoreDb.beginTransaction();
+                try {
+                db.setMeta("myname", restoredName);
                 JSONArray cons = root.optJSONArray("contacts");
                 if (cons != null) for (int i = 0; i < cons.length(); i++) { JSONObject o = cons.getJSONObject(i); db.addContact(o.optString("name"), o.optString("key")); }
                 JSONArray msgs = root.optJSONArray("messages");
@@ -2103,7 +2144,11 @@ public class MainActivity extends AppCompatActivity {
                     m.image = o.optString("image", "");
                     db.insert(m);
                 }
-                ui.post(() -> { contactNames = null; adoptIdentity(restored); toast("Restored."); showFolder(Folder.INBOX); requestScan(); });
+                restoreDb.setTransactionSuccessful();
+                } finally { restoreDb.endTransaction(); }
+                // A failed import must never replace the identity used on the next launch.
+                identityStore.save(restored);
+                ui.post(() -> { if (isFinishing() || isDestroyed()) return; myName = restoredName; contactNames = null; adoptIdentity(restored); toast("Restored."); showFolder(Folder.INBOX); requestScan(); });
             } catch (Exception e) { ui.post(() -> toast("Restore failed — wrong passphrase or bad file.")); }
         });
     }
@@ -2183,7 +2228,9 @@ public class MainActivity extends AppCompatActivity {
         TextView t1 = new TextView(this); t1.setText("Minima Mail is not enabled yet"); t1.setTextColor(Design.ACCENT); t1.setTextSize(15f); t1.setTypeface(Typeface.DEFAULT_BOLD);
         TextView t2 = new TextView(this); t2.setText("Open Minima Core → Apps and enable \"Minima Mail\", then come back."); t2.setTextColor(Design.DIM); t2.setTextSize(13f); t2.setPadding(0, dp(4), 0, dp(8));
         TextView open = accentButton("Open Minima Core");
-        open.setOnClickListener(v -> { Intent i = getPackageManager().getLaunchIntentForPackage("org.minimarex.minimacore"); if (i != null) startActivity(i); else toast("Minima Core isn't installed."); });
+        open.setOnClickListener(v -> { Intent i = getPackageManager().getLaunchIntentForPackage("com.eurobuddha.minimacore");
+        if (i == null) i = getPackageManager().getLaunchIntentForPackage("com.eurobuddha.minimablock");
+        if (i == null) i = getPackageManager().getLaunchIntentForPackage("com.eurobuddha.pandamonium"); if (i != null) startActivity(i); else toast("Minima Core isn't installed."); });
         b.addView(t1); b.addView(t2); b.addView(open);
         return b;
     }

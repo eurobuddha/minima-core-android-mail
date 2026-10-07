@@ -10,8 +10,8 @@ android {
         applicationId "com.eurobuddha.mail"
         minSdk 28
         targetSdk 35
-        versionCode 508
-        versionName "0.5.8"
+        versionCode 511
+        versionName "0.5.11"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -51,6 +51,7 @@ android {
 }
 
 dependencies {
+    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
     // JVM unit tests (SendPin): JUnit 4 runner, Mockito for NodeApi, and a REAL org.json — Android's bundled
     // org.json is a stub on the JVM, and the pin reads the coins reply with it.
     testImplementation 'junit:junit:4.13.2'
