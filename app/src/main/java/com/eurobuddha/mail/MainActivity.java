@@ -233,7 +233,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override public void onBackPressed() {
-        if (drawer.isDrawerOpen(Gravity.START)) { drawer.closeDrawer(Gravity.START); return; }
+        if (drawer.isDrawerOpen(androidx.core.view.GravityCompat.START)) { drawer.closeDrawer(androidx.core.view.GravityCompat.START); return; }
         if (stack.size() > 1) pop();
         else if (folder != Folder.INBOX) showFolder(Folder.INBOX);
         else super.onBackPressed();
@@ -355,7 +355,7 @@ public class MainActivity extends AppCompatActivity {
         row.addView(icon(iconRes, tint, 20));
         TextView t = new TextView(this);
         t.setText(label);
-        t.setTextColor(sel ? Design.ACCENT : Design.TEXT);
+        t.setTextColor(sel ? Design.ACCENT_TEXT : Design.TEXT);
         t.setTextSize(14.5f);
         if (sel) t.setTypeface(Typeface.DEFAULT_BOLD);
         t.setPadding(dp(14), 0, 0, 0);
@@ -379,7 +379,7 @@ public class MainActivity extends AppCompatActivity {
             ((ViewGroup.MarginLayoutParams) mlp).rightMargin = dp(12);
             row.setLayoutParams(mlp);
         }
-        row.setOnClickListener(v -> { drawer.closeDrawer(Gravity.START); showFolder(target); });
+        row.setOnClickListener(v -> { drawer.closeDrawer(androidx.core.view.GravityCompat.START); showFolder(target); });
         return row;
     }
 
@@ -599,7 +599,7 @@ public class MainActivity extends AppCompatActivity {
         check.setGravity(Gravity.CENTER_VERTICAL);
         check.addView(icon(R.drawable.ic_refresh, Design.ACCENT, 11));
         TextView ct = new TextView(this);
-        ct.setText("Check now"); ct.setTextColor(Design.ACCENT); ct.setTextSize(10.5f); ct.setTypeface(Typeface.DEFAULT_BOLD);
+        ct.setText("Check now"); ct.setTextColor(Design.ACCENT_TEXT); ct.setTextSize(10.5f); ct.setTypeface(Typeface.DEFAULT_BOLD);
         ct.setPadding(dp(4), 0, 0, 0);
         check.addView(ct);
         check.setPadding(dp(8), dp(2), 0, dp(2));
@@ -936,7 +936,7 @@ public class MainActivity extends AppCompatActivity {
         line.setPadding(0, dp(4), 0, 0);
         int ic; int tint; String label; int labelColor;
         if ("posting".equals(m.status)) {
-            ic = R.drawable.ic_ring; tint = Design.ACCENT; label = "Posting to chain…"; labelColor = Design.ACCENT;
+            ic = R.drawable.ic_ring; tint = Design.ACCENT; label = "Posting to chain…"; labelColor = Design.ACCENT_TEXT;
         } else if ("failed".equals(m.status)) {
             ic = R.drawable.ic_close; tint = Design.RED; label = "Failed — didn't reach the chain"; labelColor = Design.RED;
         } else if ("confirmed".equals(m.status)) {
@@ -962,7 +962,7 @@ public class MainActivity extends AppCompatActivity {
             retry.setPadding(dp(9), dp(2), dp(9), dp(2));
             retry.addView(icon(R.drawable.ic_refresh, Design.ACCENT, 11));
             TextView rt = new TextView(this);
-            rt.setText("Retry"); rt.setTextColor(Design.ACCENT); rt.setTextSize(10.5f); rt.setTypeface(Typeface.DEFAULT_BOLD);
+            rt.setText("Retry"); rt.setTextColor(Design.ACCENT_TEXT); rt.setTextSize(10.5f); rt.setTypeface(Typeface.DEFAULT_BOLD);
             rt.setPadding(dp(4), 0, 0, 0);
             retry.addView(rt);
             retry.setOnClickListener(v -> retrySend(m.id));
@@ -1001,7 +1001,7 @@ public class MainActivity extends AppCompatActivity {
         sub.setMaxLines(1);
         tcol.addView(nm); tcol.addView(sub);
         head.addView(tcol);
-        head.addView(iconBtn(R.drawable.ic_dots, v -> conversationMenu(otherKey, hashref)));
+        head.addView(iconBtn(R.drawable.ic_dots, v -> conversationMenu(v, otherKey, hashref)));
         col.addView(head);
 
         // messages
@@ -1144,7 +1144,7 @@ public class MainActivity extends AppCompatActivity {
 
                 if (!r.m.incoming) {
                     int ic = 0; int tint = 0; String label = null; int labelColor = Design.DIM2;
-                    if ("posting".equals(r.m.status)) { ic = R.drawable.ic_ring; tint = Design.ACCENT; label = "Posting to chain…"; labelColor = Design.ACCENT; }
+                    if ("posting".equals(r.m.status)) { ic = R.drawable.ic_ring; tint = Design.ACCENT; label = "Posting to chain…"; labelColor = Design.ACCENT_TEXT; }
                     else if ("failed".equals(r.m.status)) { ic = R.drawable.ic_close; tint = Design.RED; label = "Failed — retry from Outbox"; labelColor = Design.RED; }
                     else if ("confirmed".equals(r.m.status)) { ic = R.drawable.ic_check; tint = Design.GREEN; label = "Confirmed"; }
                     else if ("sent".equals(r.m.status)) {
@@ -1169,8 +1169,8 @@ public class MainActivity extends AppCompatActivity {
         @Override public int getItemCount() { return rows.size(); }
     }
 
-    private void conversationMenu(String otherKey, String hashref) {
-        androidx.appcompat.widget.PopupMenu m = new androidx.appcompat.widget.PopupMenu(this, container);
+    private void conversationMenu(View anchor, String otherKey, String hashref) {
+        androidx.appcompat.widget.PopupMenu m = new androidx.appcompat.widget.PopupMenu(this, anchor);
         m.getMenu().add(0, 1, 0, db.contactName(otherKey) == null ? "Add to contacts" : "View contact key");
         m.getMenu().add(0, 2, 1, "Delete thread");
         m.setOnMenuItemClickListener(it -> {
@@ -1336,7 +1336,7 @@ public class MainActivity extends AppCompatActivity {
         chip.addView(icon(iconRes, Design.ACCENT, 12));
         if (label != null) {
             TextView t = new TextView(this);
-            t.setText(label); t.setTextColor(Design.ACCENT); t.setTextSize(10.5f); t.setTypeface(Typeface.DEFAULT_BOLD);
+            t.setText(label); t.setTextColor(Design.ACCENT_TEXT); t.setTextSize(10.5f); t.setTypeface(Typeface.DEFAULT_BOLD);
             t.setPadding(dp(4), 0, 0, 0);
             chip.addView(t);
         }
@@ -1355,7 +1355,7 @@ public class MainActivity extends AppCompatActivity {
         chip.setPadding(dp(11), dp(6), dp(11), dp(6));
         chip.addView(icon(iconRes, Design.ACCENT, 13));
         TextView t = new TextView(this);
-        t.setText(label); t.setTextColor(Design.ACCENT); t.setTextSize(11.5f); t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setText(label); t.setTextColor(Design.ACCENT_TEXT); t.setTextSize(11.5f); t.setTypeface(Typeface.DEFAULT_BOLD);
         t.setPadding(dp(5), 0, 0, 0);
         chip.addView(t);
         return chip;
@@ -2061,7 +2061,7 @@ public class MainActivity extends AppCompatActivity {
     private void promptBackupPass(Uri uri, boolean export) {
         final EditText p = input("Passphrase");
         p.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        new AlertDialog.Builder(this)
+        AlertDialog secureBackup = new AlertDialog.Builder(this)
                 .setTitle(export ? "Encrypt backup" : "Decrypt backup")
                 .setMessage(export ? "Choose a passphrase. Your backup contains your private key, so it's encrypted with this — you'll need it to restore."
                         : "Enter the passphrase you used when you made this backup.")
@@ -2071,7 +2071,9 @@ public class MainActivity extends AppCompatActivity {
                     if (pass.length() < 8) { toast("Use a passphrase of at least 8 characters."); return; }
                     if (export) doExport(uri, pass); else doImport(uri, pass);
                 })
-                .setNegativeButton("Cancel", null).show();
+                .setNegativeButton("Cancel", null).create();
+        secureBackup.show();
+        secureBackup.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
     }
 
     private void doExport(Uri uri, String pass) {
@@ -2166,7 +2168,7 @@ public class MainActivity extends AppCompatActivity {
         scan.setPadding(dp(4), dp(10), dp(8), dp(6));
         scan.addView(icon(R.drawable.ic_scan, Design.ACCENT, 14));
         TextView stext = new TextView(this);
-        stext.setText("Scan QR"); stext.setTextColor(Design.ACCENT); stext.setTextSize(13f);
+        stext.setText("Scan QR"); stext.setTextColor(Design.ACCENT_TEXT); stext.setTextSize(13f);
         stext.setPadding(dp(6), 0, 0, 0);
         scan.addView(stext);
         scan.setOnClickListener(v -> startScan(key));
@@ -2225,7 +2227,7 @@ public class MainActivity extends AppCompatActivity {
         b.setOrientation(LinearLayout.VERTICAL);
         b.setBackgroundColor(Design.SURFACE);
         b.setPadding(dp(16), dp(14), dp(16), dp(14));
-        TextView t1 = new TextView(this); t1.setText("Minima Mail is not enabled yet"); t1.setTextColor(Design.ACCENT); t1.setTextSize(15f); t1.setTypeface(Typeface.DEFAULT_BOLD);
+        TextView t1 = new TextView(this); t1.setText("Minima Mail is not enabled yet"); t1.setTextColor(Design.ACCENT_TEXT); t1.setTextSize(15f); t1.setTypeface(Typeface.DEFAULT_BOLD);
         TextView t2 = new TextView(this); t2.setText("Open Minima Core → Apps and enable \"Minima Mail\", then come back."); t2.setTextColor(Design.DIM); t2.setTextSize(13f); t2.setPadding(0, dp(4), 0, dp(8));
         TextView open = accentButton("Open Minima Core");
         open.setOnClickListener(v -> { Intent i = getPackageManager().getLaunchIntentForPackage("com.eurobuddha.minimacore");
@@ -2250,7 +2252,7 @@ public class MainActivity extends AppCompatActivity {
         if (back) {
             h.addView(iconBtn(R.drawable.ic_back, v -> pop()));
         } else {
-            ImageView burger = iconBtn(R.drawable.ic_menu, v -> drawer.openDrawer(Gravity.START));
+            ImageView burger = iconBtn(R.drawable.ic_menu, v -> drawer.openDrawer(androidx.core.view.GravityCompat.START));
             h.addView(burger);
         }
         TextView t = new TextView(this);
@@ -2309,14 +2311,14 @@ public class MainActivity extends AppCompatActivity {
 
     private TextView textButton(String s) {
         TextView b = new TextView(this);
-        b.setText(s); b.setTextColor(Design.ACCENT); b.setTextSize(14f);
+        b.setText(s); b.setTextColor(Design.ACCENT_TEXT); b.setTextSize(14f);
         b.setPadding(dp(8), dp(12), dp(16), dp(12));
         return b;
     }
 
     private TextView accentOutlineButton(String s) {
         TextView b = new TextView(this);
-        b.setText(s); b.setTextColor(Design.ACCENT); b.setTextSize(14f);
+        b.setText(s); b.setTextColor(Design.ACCENT_TEXT); b.setTextSize(14f);
         b.setBackground(Design.outlineBg(this, Design.ACCENT, 10));
         b.setPadding(dp(14), dp(10), dp(14), dp(10));
         return b;

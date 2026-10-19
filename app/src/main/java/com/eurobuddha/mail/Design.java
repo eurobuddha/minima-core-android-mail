@@ -20,6 +20,7 @@ public final class Design {
     public static int SURFACE2;
     public static int HAIRLINE;
     public static int ACCENT;
+    public static int ACCENT_TEXT;
     public static int ON_ACCENT;
     public static int TEXT;
     public static int DIM;
@@ -38,9 +39,9 @@ public final class Design {
             HAIRLINE  = 0xFFE8E6E0;
             TEXT      = 0xFF1C1B1A;   // ink
             DIM       = 0xFF6E6A63;
-            DIM2      = 0xFF9B968D;
+            DIM2      = 0xFF6E6A63;
             ACCENT    = 0xFFF7931A;   // Minima orange
-            ON_ACCENT = 0xFFFFFFFF;
+            ON_ACCENT = 0xFF1A1000;
             GREEN     = 0xFF1F9D5B;
             RED       = 0xFFD9483B;
         } else {
@@ -50,12 +51,13 @@ public final class Design {
             HAIRLINE  = 0xFF262633;
             TEXT      = 0xFFFFFFFF;
             DIM       = 0xFF9A9AA8;
-            DIM2      = 0xFF6A6A78;
+            DIM2      = 0xFF9A9AA8;
             ACCENT    = 0xFFF7931A;
             ON_ACCENT = 0xFF1A1000;
             GREEN     = 0xFF2ECC71;
-            RED       = 0xFFE74C3C;
+            RED       = 0xFFFF5B5B;
         }
+        ACCENT_TEXT = LIGHT ? 0xFF9B4A00 : ACCENT;
         IN = GREEN;
         OUT = ACCENT;
     }

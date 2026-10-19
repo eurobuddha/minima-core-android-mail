@@ -1,0 +1,17 @@
+Minima Mail 0.5.12 / code512 — standalone UI parity checkpoint
+Reused scripts/adapt-pandamonium-mail-languages.py from the Pandamonium branch:
+- conversation menu anchored to the pressed button;
+- backup passphrase dialog uses existing seed-dialog FLAG_SECURE protection;
+- small orange text and muted labels have readable light/dark colours;
+- native dialog surfaces follow the existing selected Mail theme.
+Standalone strings, IPC, identity and payment behavior retained.
+
+Build lint also required GravityCompat.START for DrawerLayout methods (same
+integer value) and optional-camera declaration reused from AtomiX's manifest.
+Review: changed methods, all Design tokens, themes and manifest inspected.
+No blocking finding in this interface change; full parity remains in progress.
+Validation: 6 existing tests pass. Offline testDebugUnitTest, assembleRelease,
+lintRelease successful; lint 0 errors, 81 warnings. APK package/version and
+Minima family signing certificate verified. No Fold check, installation or release.
+Local signed candidate: dist/minima-mail-0.5.12-candidate.apk
+SHA256: 263069fe03f9c4c83072a806b846968d0b70383ebdaa71b75cff03d489bfb498
