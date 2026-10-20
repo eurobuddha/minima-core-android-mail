@@ -1,7 +1,7 @@
 {
   "app/build.gradle": {
-    "mtime": 1786327202.8297539,
-    "ast_hash": "9f8a8921779156be72637e88966a29ae",
+    "mtime": 1788463935.2983077,
+    "ast_hash": "97eaef46ff849bee014f004e577863db",
     "semantic_hash": ""
   },
   "app/src/main/java/com/eurobuddha/comms/Avatars.java": {
@@ -120,8 +120,8 @@
     "semantic_hash": "d0461a438d70bce9fc09ac142bfd2c81"
   },
   "CLAUDE.md": {
-    "mtime": 1784124679.0609565,
-    "ast_hash": "4439d09bc81851d89f9ffcecc4136dcf",
+    "mtime": 1786883527.4767928,
+    "ast_hash": "46e9035553a7ba076e59754595bc542a",
     "semantic_hash": ""
   },
   "DESIGN_MAP.md": {
@@ -162,6 +162,16 @@
   "app/src/main/java/com/eurobuddha/comms/SendPin.java": {
     "mtime": 1786327115.2192037,
     "ast_hash": "42b5550454c21c1e5592ad575a38f4dd",
+    "semantic_hash": ""
+  },
+  ".githooks/install.sh": {
+    "mtime": 1786883527.4539342,
+    "ast_hash": "f31b37c6d1b5d340a5623f1715457ea0",
+    "semantic_hash": ""
+  },
+  ".githooks/pre-commit": {
+    "mtime": 1786883527.44949,
+    "ast_hash": "03526be838d5dd774506cc1f8b47f38c",
     "semantic_hash": ""
   }
 }

@@ -24,7 +24,6 @@ public final class Design {
     public static int ON_ACCENT;
     public static int TEXT;
     public static int DIM;
-    public static int DIM2;
     public static int GREEN;
     public static int RED;
     public static int IN;        // received (green)
@@ -39,7 +38,6 @@ public final class Design {
             HAIRLINE  = 0xFFE8E6E0;
             TEXT      = 0xFF1C1B1A;   // ink
             DIM       = 0xFF6E6A63;
-            DIM2      = 0xFF6E6A63;
             ACCENT    = 0xFFF7931A;   // Minima orange
             ON_ACCENT = 0xFF1A1000;
             GREEN     = 0xFF1F9D5B;
@@ -51,7 +49,6 @@ public final class Design {
             HAIRLINE  = 0xFF262633;
             TEXT      = 0xFFFFFFFF;
             DIM       = 0xFF9A9AA8;
-            DIM2      = 0xFF9A9AA8;
             ACCENT    = 0xFFF7931A;
             ON_ACCENT = 0xFF1A1000;
             GREEN     = 0xFF2ECC71;

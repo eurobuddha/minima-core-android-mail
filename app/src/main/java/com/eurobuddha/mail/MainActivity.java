@@ -40,6 +40,7 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
+import androidx.core.view.GravityCompat;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
@@ -233,7 +234,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override public void onBackPressed() {
-        if (drawer.isDrawerOpen(androidx.core.view.GravityCompat.START)) { drawer.closeDrawer(androidx.core.view.GravityCompat.START); return; }
+        if (drawer.isDrawerOpen(GravityCompat.START)) { drawer.closeDrawer(GravityCompat.START); return; }
         if (stack.size() > 1) pop();
         else if (folder != Folder.INBOX) showFolder(Folder.INBOX);
         else super.onBackPressed();
@@ -313,7 +314,7 @@ public class MainActivity extends AppCompatActivity {
         brand.setText(bs);
         brand.setTextColor(Design.TEXT); brand.setTextSize(16f); brand.setTypeface(Typeface.DEFAULT_BOLD);
         TextView me = new TextView(this);
-        me.setText(myId == null ? "connecting to your node…" : "you · " + shortKey(myId));
+        me.setText(myId == null ? "connecting to your node…" : "you · " + myId);
         me.setTextColor(Design.DIM); me.setTextSize(11f); me.setTypeface(Typeface.MONOSPACE);
         me.setPadding(0, dp(3), 0, 0);
         // NB: no click handler on the header — it sits under the hamburger's screen position, so a
@@ -340,7 +341,7 @@ public class MainActivity extends AppCompatActivity {
         navPanel.addView(spacer, new LinearLayout.LayoutParams(1, 0, 1f));
         TextView ver = new TextView(this);
         ver.setText("Minima Mail v" + BuildConfig.VERSION_NAME);
-        ver.setTextColor(Design.DIM2); ver.setTextSize(10.5f);
+        ver.setTextColor(Design.DIM); ver.setTextSize(10.5f);
         ver.setPadding(dp(18), dp(6), dp(18), dp(10));
         navPanel.addView(ver);
     }
@@ -379,7 +380,7 @@ public class MainActivity extends AppCompatActivity {
             ((ViewGroup.MarginLayoutParams) mlp).rightMargin = dp(12);
             row.setLayoutParams(mlp);
         }
-        row.setOnClickListener(v -> { drawer.closeDrawer(androidx.core.view.GravityCompat.START); showFolder(target); });
+        row.setOnClickListener(v -> { drawer.closeDrawer(GravityCompat.START); showFolder(target); });
         return row;
     }
 
@@ -540,8 +541,8 @@ public class MainActivity extends AppCompatActivity {
                 .setNegativeButton("Restore from backup instead", (d, w) -> { identityBusy = false; importLauncher.launch(new String[]{"application/json", "*/*"}); })
                 .create();
         identityPrompt.setOnCancelListener(d -> identityBusy = false);
-        identityPrompt.show();
         identityPrompt.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+        identityPrompt.show();
     }
 
     // ---- scanning ----
@@ -585,7 +586,7 @@ public class MainActivity extends AppCompatActivity {
         bar.setPadding(dp(14), dp(3), dp(14), dp(7));
         View dot = new View(this);
         GradientDrawable g = new GradientDrawable(); g.setShape(GradientDrawable.OVAL);
-        g.setColor(paired ? Design.GREEN : Design.DIM2);
+        g.setColor(paired ? Design.GREEN : Design.DIM);
         dot.setBackground(g);
         LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(dp(6), dp(6));
         dlp.rightMargin = dp(6);
@@ -649,7 +650,7 @@ public class MainActivity extends AppCompatActivity {
 
         final TextView empty = new TextView(this);
         empty.setText(archivedView ? "No archived threads." : "No mail yet.\nCompose a message to get started.");
-        empty.setTextColor(Design.DIM2); empty.setGravity(Gravity.CENTER); empty.setTextSize(13f);
+        empty.setTextColor(Design.DIM); empty.setGravity(Gravity.CENTER); empty.setTextSize(13f);
         empty.setPadding(dp(24), dp(64), dp(24), 0); empty.setVisibility(View.GONE);
 
         io.execute(() -> {                                  // load off the UI thread
@@ -741,17 +742,17 @@ public class MainActivity extends AppCompatActivity {
             nm.setTextColor(unread ? Design.TEXT : Design.DIM);
             nm.setTextSize(14.5f);
             nm.setTypeface(unread ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-            nm.setMaxLines(1);
+            if (!name.equals(other)) nm.setMaxLines(1);   // a raw key (unnamed sender) wraps in full
             nm.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             TextView time = new TextView(MainActivity.this);
-            time.setText(rel(t.date)); time.setTextColor(Design.DIM2); time.setTextSize(11f);
+            time.setText(rel(t.date)); time.setTextColor(Design.DIM); time.setTextSize(11f);
             l1.addView(nm); l1.addView(time);
 
             TextView subj = new TextView(MainActivity.this);
             boolean noSubject = t.subject == null || t.subject.isEmpty();
             subj.setText(noSubject ? "(no subject)" : t.subject);
             subj.setTextColor(unread ? Design.TEXT : Design.DIM);
-            if (noSubject) { subj.setTypeface(Typeface.defaultFromStyle(Typeface.ITALIC)); subj.setTextColor(Design.DIM2); }
+            if (noSubject) { subj.setTypeface(Typeface.defaultFromStyle(Typeface.ITALIC)); subj.setTextColor(Design.DIM); }
             else subj.setTypeface(unread ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
             subj.setTextSize(12.5f); subj.setMaxLines(1);
 
@@ -828,12 +829,15 @@ public class MainActivity extends AppCompatActivity {
 
     private void showThreadActions(MailMessage t, final boolean archivedView) {
         final String hashref = t.hashref;
-        String[] items = {archivedView ? "Unarchive" : "Archive", "Delete"};
+        final String other = myId != null && myId.equals(t.frompublickey) ? t.topublickey : t.frompublickey;
+        String[] items = {archivedView ? "Unarchive" : "Archive", "Copy key", "Delete"};
         new AlertDialog.Builder(this).setItems(items, (d, w) -> {
             if (w == 0) {
                 io.execute(() -> db.setArchived(hashref, !archivedView));
                 toast(archivedView ? "Unarchived" : "Archived");
                 refreshFolderIfVisible();
+            } else if (w == 1) {
+                copy(other, "Mail key"); toast("Key copied.");
             } else {
                 new AlertDialog.Builder(this).setMessage("Delete this thread?")
                         .setPositiveButton("Delete", (dd, ww) -> { io.execute(() -> db.deleteThread(hashref)); refreshFolderIfVisible(); })
@@ -866,7 +870,7 @@ public class MainActivity extends AppCompatActivity {
         final TextView empty = new TextView(this);
         empty.setText(outboxView ? "Outbox is empty — everything you sent has reached the chain."
                 : "Nothing sent yet.");
-        empty.setTextColor(Design.DIM2); empty.setGravity(Gravity.CENTER); empty.setTextSize(13f);
+        empty.setTextColor(Design.DIM); empty.setGravity(Gravity.CENTER); empty.setTextSize(13f);
         empty.setPadding(dp(24), dp(64), dp(24), 0); empty.setVisibility(View.GONE);
 
         final List<MailMessage> data = new ArrayList<>();
@@ -888,15 +892,20 @@ public class MainActivity extends AppCompatActivity {
 
                 LinearLayout l1 = new LinearLayout(MainActivity.this);
                 TextView to = new TextView(MainActivity.this);
-                String subj = (m.subject == null || m.subject.isEmpty()) ? "(no subject)" : m.subject;
-                to.setText("To " + nameFor(m.topublickey) + " — " + subj);
+                String toName = nameFor(m.topublickey);
+                to.setText("To " + toName);
                 to.setTextColor(Design.TEXT); to.setTextSize(13f); to.setTypeface(Typeface.DEFAULT_BOLD);
-                to.setMaxLines(1);
+                if (!toName.equals(m.topublickey)) to.setMaxLines(1);   // a raw key (unnamed recipient) wraps in full
                 to.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
                 TextView time = new TextView(MainActivity.this);
-                time.setText(rel(m.date)); time.setTextColor(Design.DIM2); time.setTextSize(10.5f);
+                time.setText(rel(m.date)); time.setTextColor(Design.DIM); time.setTextSize(10.5f);
                 l1.addView(to); l1.addView(time);
                 cell.addView(l1);
+
+                TextView subj = new TextView(MainActivity.this);
+                subj.setText((m.subject == null || m.subject.isEmpty()) ? "(no subject)" : m.subject);
+                subj.setTextColor(Design.TEXT); subj.setTextSize(12.5f); subj.setMaxLines(1);
+                cell.addView(subj);
 
                 TextView snip = new TextView(MainActivity.this);
                 snip.setText(previewText(m));
@@ -991,14 +1000,18 @@ public class MainActivity extends AppCompatActivity {
         tcol.setOrientation(LinearLayout.VERTICAL);
         tcol.setPadding(dp(10), 0, 0, 0);
         tcol.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        String otherName = nameFor(otherKey);
+        boolean unnamed = otherName.equals(otherKey);
         TextView nm = new TextView(this);
-        nm.setText(subject.isEmpty() ? nameFor(otherKey) : subject);
+        // unnamed + no subject: the full key is shown (and copyable) in `sub` below — don't clip it here too
+        nm.setText(subject.isEmpty() ? (unnamed ? "Conversation" : otherName) : subject);
         nm.setTextColor(Design.TEXT); nm.setTextSize(15f); nm.setTypeface(Typeface.DEFAULT_BOLD);
         nm.setMaxLines(1);
         TextView sub = new TextView(this);
-        sub.setText(subject.isEmpty() ? shortKey(otherKey) : nameFor(otherKey) + " · " + shortKey(otherKey));
+        sub.setText(subject.isEmpty() || unnamed ? otherKey : otherName + " · " + otherKey);
         sub.setTextColor(Design.DIM); sub.setTextSize(10.5f); sub.setTypeface(Typeface.MONOSPACE);
-        sub.setMaxLines(1);
+        sub.setContentDescription("Mail key, tap to copy");
+        sub.setOnClickListener(v -> { copy(otherKey, "Mail key"); toast("Key copied."); });
         tcol.addView(nm); tcol.addView(sub);
         head.addView(tcol);
         head.addView(iconBtn(R.drawable.ic_dots, v -> conversationMenu(v, otherKey, hashref)));
@@ -1043,7 +1056,7 @@ public class MainActivity extends AppCompatActivity {
         bar.addView(attach);
         final EditText box = new EditText(this);
         box.setHint("Reply");
-        box.setHintTextColor(Design.DIM2);
+        box.setHintTextColor(Design.DIM);
         box.setTextColor(Design.TEXT);
         box.setTextSize(15f);
         box.setMaxLines(4);
@@ -1112,7 +1125,7 @@ public class MainActivity extends AppCompatActivity {
             if (r.dateHeader != null) {
                 TextView chip = new TextView(MainActivity.this);
                 chip.setText(r.dateHeader);
-                chip.setTextColor(Design.DIM2);
+                chip.setTextColor(Design.DIM);
                 chip.setTextSize(11f);
                 chip.setGravity(Gravity.CENTER);
                 chip.setPadding(0, dp(10), 0, dp(8));
@@ -1138,22 +1151,22 @@ public class MainActivity extends AppCompatActivity {
 
                 TextView time = new TextView(MainActivity.this);
                 time.setText(clock(r.m.date));
-                time.setTextColor(Design.DIM2);
+                time.setTextColor(Design.DIM);
                 time.setTextSize(10f);
                 f.addView(time);
 
                 if (!r.m.incoming) {
-                    int ic = 0; int tint = 0; String label = null; int labelColor = Design.DIM2;
+                    int ic = 0; int tint = 0; String label = null; int labelColor = Design.DIM;
                     if ("posting".equals(r.m.status)) { ic = R.drawable.ic_ring; tint = Design.ACCENT; label = "Posting to chain…"; labelColor = Design.ACCENT_TEXT; }
                     else if ("failed".equals(r.m.status)) { ic = R.drawable.ic_close; tint = Design.RED; label = "Failed — retry from Outbox"; labelColor = Design.RED; }
                     else if ("confirmed".equals(r.m.status)) { ic = R.drawable.ic_check; tint = Design.GREEN; label = "Confirmed"; }
                     else if ("sent".equals(r.m.status)) {
-                        ic = R.drawable.ic_chain; tint = Design.DIM2;
+                        ic = R.drawable.ic_chain; tint = Design.DIM;
                         label = "On-chain" + (r.m.sentblock > 0 ? " · blk " + String.format(java.util.Locale.ENGLISH, "%,d", r.m.sentblock) : "");
                     }
                     if (label != null) {
                         TextView dotSep = new TextView(MainActivity.this);
-                        dotSep.setText(" · "); dotSep.setTextColor(Design.DIM2); dotSep.setTextSize(10f);
+                        dotSep.setText(" · "); dotSep.setTextColor(Design.DIM); dotSep.setTextSize(10f);
                         f.addView(dotSep);
                         f.addView(icon(ic, tint, 11));
                         TextView st = new TextView(MainActivity.this);
@@ -1246,7 +1259,7 @@ public class MainActivity extends AppCompatActivity {
 
         // Body
         body.setHint("Write your message…");
-        body.setHintTextColor(Design.DIM2);
+        body.setHintTextColor(Design.DIM);
         body.setTextColor(Design.TEXT);
         body.setTextSize(14.5f);
         body.setGravity(Gravity.TOP);
@@ -1318,7 +1331,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void styleFieldInput(EditText e, boolean mono) {
-        e.setHintTextColor(Design.DIM2);
+        e.setHintTextColor(Design.DIM);
         e.setTextColor(Design.TEXT);
         e.setTextSize(mono ? 12.5f : 14f);
         if (mono) e.setTypeface(Typeface.MONOSPACE);
@@ -1389,7 +1402,7 @@ public class MainActivity extends AppCompatActivity {
                 mid.setPadding(dp(12), 0, 0, 0);
                 mid.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
                 TextView nm = new TextView(MainActivity.this); nm.setText(name); nm.setTextColor(Design.TEXT); nm.setTextSize(15f); nm.setTypeface(Typeface.DEFAULT_BOLD);
-                TextView kv = new TextView(MainActivity.this); kv.setText(shortKey(key)); kv.setTextColor(Design.DIM); kv.setTextSize(12f); kv.setTypeface(Typeface.MONOSPACE);
+                TextView kv = new TextView(MainActivity.this); kv.setText(key); kv.setTextColor(Design.DIM); kv.setTextSize(12f); kv.setTypeface(Typeface.MONOSPACE);
                 mid.addView(nm); mid.addView(kv); row.addView(mid);
                 row.setOnClickListener(v -> push(buildCompose(key, null)));
                 row.setOnLongClickListener(v -> {
@@ -1434,7 +1447,7 @@ public class MainActivity extends AppCompatActivity {
         keyLabel.setTextColor(Design.DIM); keyLabel.setTextSize(12f); keyLabel.setPadding(0, dp(14), 0, dp(6));
         form.addView(keyLabel);
         TextView key = new TextView(this);
-        key.setText(myId == null ? "(connecting to your node…)" : shortKey(myId));
+        key.setText(myId == null ? "(connecting to your node…)" : myId);
         key.setTextColor(Design.TEXT); key.setTextSize(13f); key.setTypeface(Typeface.MONOSPACE);
         form.addView(key);
         TextView copy = accentButton("Copy my key");
@@ -1449,7 +1462,7 @@ public class MainActivity extends AppCompatActivity {
             ral.setTextColor(Design.DIM); ral.setTextSize(12f); ral.setPadding(0, dp(16), 0, dp(4));
             form.addView(ral);
             TextView ra = new TextView(this);
-            ra.setText(shortKey(myPayaddr));
+            ra.setText(myPayaddr);
             ra.setTextColor(Design.TEXT); ra.setTextSize(12f); ra.setTypeface(Typeface.MONOSPACE);
             ra.setOnClickListener(v -> { copy(myPayaddr, "Receiving address"); toast("Address copied."); });
             form.addView(ra);
@@ -1536,7 +1549,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView settingsGroup(String s) {
         TextView t = new TextView(this);
         t.setText(s.toUpperCase(java.util.Locale.ENGLISH));
-        t.setTextColor(Design.DIM2); t.setTextSize(10.5f); t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setTextColor(Design.DIM); t.setTextSize(10.5f); t.setTypeface(Typeface.DEFAULT_BOLD);
         t.setLetterSpacing(0.08f);
         t.setPadding(dp(16), dp(18), dp(16), dp(6));
         return t;
@@ -1564,7 +1577,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private ImageView chev() {
-        ImageView iv = icon(R.drawable.ic_chev, Design.DIM2, 14);
+        ImageView iv = icon(R.drawable.ic_chev, Design.DIM, 14);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(14), dp(14));
         lp.leftMargin = dp(8);
         iv.setLayoutParams(lp);
@@ -1743,15 +1756,15 @@ public class MainActivity extends AppCompatActivity {
             TextView hint = new TextView(this);
             hint.setText(known != null ? "Auto-filled from their messages."
                     : "Auto-fills when they message you / are online. Or scan their QR, or paste their address.");
-            hint.setTextColor(Design.DIM2); hint.setTextSize(11f); hint.setPadding(0, dp(4), 0, 0);
+            hint.setTextColor(Design.DIM); hint.setTextSize(11f); hint.setPadding(0, dp(4), 0, 0);
             box.addView(hint);
             TextView scanAddr = textButton("Scan their QR for their address");
             scanAddr.setOnClickListener(v -> startAddrScan(addr));
             box.addView(scanAddr);
             if (myPayaddr.isEmpty()) fetchMyPayaddr();
             TextView mine = new TextView(this);
-            mine.setText("You'll receive at: " + (myPayaddr.isEmpty() ? "(getting your address…)" : shortKey(myPayaddr)));
-            mine.setTextColor(Design.DIM2); mine.setTextSize(10f); mine.setPadding(0, dp(8), 0, 0);
+            mine.setText("You'll receive at: " + (myPayaddr.isEmpty() ? "(getting your address…)" : myPayaddr));
+            mine.setTextColor(Design.DIM); mine.setTextSize(10f); mine.setPadding(0, dp(8), 0, 0);
             box.addView(mine);
             box.addView(label("Note (optional)"));
             final EditText memo = input("What's it for?");
@@ -1872,7 +1885,7 @@ public class MainActivity extends AppCompatActivity {
     private void payResult(boolean ok, String message, String txid) {
         AlertDialog.Builder b = new AlertDialog.Builder(this)
                 .setTitle(ok ? "Payment sent" : "Payment failed")
-                .setMessage(message + (ok && txid != null && !txid.isEmpty() ? "\n\nTx: " + shortKey(txid) : ""))
+                .setMessage(message + (ok && txid != null && !txid.isEmpty() ? "\n\nTx: " + txid : ""))
                 .setPositiveButton("OK", null);
         if (ok && txid != null && !txid.isEmpty()) b.setNeutralButton("Copy tx id", (d, w) -> { copy(txid, "Tx id"); toast("Copied."); });
         b.show();
@@ -2026,8 +2039,8 @@ public class MainActivity extends AppCompatActivity {
                     try { if (new java.math.BigDecimal(conf).signum() <= 0) continue; } catch (Exception e) { continue; }
                     String name;
                     Object tok = t.opt("token");
-                    if (tok instanceof JSONObject) name = ((JSONObject) tok).optString("name", shortKey(tid));
-                    else name = (tok == null) ? shortKey(tid) : tok.toString();
+                    if (tok instanceof JSONObject) name = ((JSONObject) tok).optString("name", tid);
+                    else name = (tok == null) ? tid : tok.toString();
                     if ("0x00".equals(tid)) name = "Minima";
                     out.add(new String[]{tid, name, conf});
                 }
@@ -2072,8 +2085,8 @@ public class MainActivity extends AppCompatActivity {
                     if (export) doExport(uri, pass); else doImport(uri, pass);
                 })
                 .setNegativeButton("Cancel", null).create();
-        secureBackup.show();
         secureBackup.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+        secureBackup.show();
     }
 
     private void doExport(Uri uri, String pass) {
@@ -2252,7 +2265,7 @@ public class MainActivity extends AppCompatActivity {
         if (back) {
             h.addView(iconBtn(R.drawable.ic_back, v -> pop()));
         } else {
-            ImageView burger = iconBtn(R.drawable.ic_menu, v -> drawer.openDrawer(androidx.core.view.GravityCompat.START));
+            ImageView burger = iconBtn(R.drawable.ic_menu, v -> drawer.openDrawer(GravityCompat.START));
             h.addView(burger);
         }
         TextView t = new TextView(this);
@@ -2293,7 +2306,7 @@ public class MainActivity extends AppCompatActivity {
 
     private EditText input(String hint) {
         EditText e = new EditText(this);
-        e.setHint(hint); e.setHintTextColor(Design.DIM2); e.setTextColor(Design.TEXT); e.setTextSize(14f);
+        e.setHint(hint); e.setHintTextColor(Design.DIM); e.setTextColor(Design.TEXT); e.setTextSize(14f);
         e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         e.setBackground(Design.cardBg(this, Design.SURFACE, 10));
         int p = dp(12); e.setPadding(p, p, p, p);
@@ -2334,14 +2347,7 @@ public class MainActivity extends AppCompatActivity {
             contactNames = m;
         }
         String n = contactNames.get(key);
-        return n != null ? n : shortKey(key);
-    }
-
-    private static String shortKey(String key) {
-        if (key == null) return "—";
-        String h = key.startsWith("0x") ? key.substring(2) : key;
-        if (h.length() <= 14) return key;
-        return "0x" + h.substring(0, 8) + "…" + h.substring(h.length() - 6);
+        return n != null ? n : key;
     }
 
     private String previewText(MailMessage t) {
