@@ -1,5 +1,6 @@
 package com.eurobuddha.mail;
 
+import com.eurobuddha.minimaapi.MinimaAPI;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
@@ -206,13 +207,13 @@ public class MainActivity extends AppCompatActivity {
         notifyReceiver = new BroadcastReceiver() {
             @Override public void onReceive(Context c, Intent i) {
                 try {
-                    String event = new JSONObject(i.getStringExtra(MinimaAPIMessages.MINIMA_API_NOTIFY_DATA)).optString("event", "");
+                    String event = new JSONObject(MinimaAPI.notifyData(i)).optString("event", "");
                     if ("NEWBLOCK".equals(event) || "NEWBALANCE".equals(event)) { fetchBlock(); requestScan(); }
                 } catch (Exception ignored) {}
             }
         };
         ContextCompat.registerReceiver(this, notifyReceiver,
-                new IntentFilter(MinimaAPIMessages.MINIMA_API_NOTIFY), ContextCompat.RECEIVER_EXPORTED);
+                MinimaAPI.notifyFilter(), ContextCompat.RECEIVER_EXPORTED);
 
         ui.postDelayed(freshTick, 30000);
     }
@@ -2243,9 +2244,7 @@ public class MainActivity extends AppCompatActivity {
         TextView t1 = new TextView(this); t1.setText("Minima Mail is not enabled yet"); t1.setTextColor(Design.ACCENT_TEXT); t1.setTextSize(15f); t1.setTypeface(Typeface.DEFAULT_BOLD);
         TextView t2 = new TextView(this); t2.setText("Open Minima Core → Apps and enable \"Minima Mail\", then come back."); t2.setTextColor(Design.DIM); t2.setTextSize(13f); t2.setPadding(0, dp(4), 0, dp(8));
         TextView open = accentButton("Open Minima Core");
-        open.setOnClickListener(v -> { Intent i = getPackageManager().getLaunchIntentForPackage("com.eurobuddha.minimacore");
-        if (i == null) i = getPackageManager().getLaunchIntentForPackage("com.eurobuddha.minimablock");
-        if (i == null) i = getPackageManager().getLaunchIntentForPackage("com.eurobuddha.pandamonium"); if (i != null) startActivity(i); else toast("Minima Core isn't installed."); });
+        open.setOnClickListener(v -> { Intent i = MinimaAPI.launchNode(this); if (i != null) startActivity(i); else toast("Minima Core isn't installed."); });
         b.addView(t1); b.addView(t2); b.addView(open);
         return b;
     }
