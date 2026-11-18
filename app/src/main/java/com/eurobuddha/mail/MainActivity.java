@@ -142,6 +142,7 @@ public class MainActivity extends AppCompatActivity {
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        MailAddress.init(this);
         ls = Sodium.get();
         db = new CommsDb(this);
         Design.load(db.getMeta("theme", "light"));
@@ -216,6 +217,11 @@ public class MainActivity extends AppCompatActivity {
                 MinimaAPI.notifyFilter(), ContextCompat.RECEIVER_EXPORTED);
 
         ui.postDelayed(freshTick, 30000);
+        if (Intent.ACTION_VIEW.equals(getIntent().getAction())) {
+            String key = MailAddress.directKey(getIntent().getDataString());
+            if (key == null) toast("Invalid Mail contact link.");
+            else addContactDialog(getIntent().getDataString());
+        }
     }
 
     private final Runnable freshTick = new Runnable() {
@@ -485,6 +491,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void adoptIdentity(CommsIdentity id) {
+        if (myId != null && !myId.equals(id.publicId()) && AddressRenewal.enabled(this, myId))
+            AddressRenewal.disable(this, myId);
         identity = id;
         crypto = new LocalEcCryptoProvider(ls, id);
         myId = id.publicId();
@@ -520,6 +528,10 @@ public class MainActivity extends AppCompatActivity {
     private String acceptKeyShare(String shared) {
         if (shared == null) return "";
         shared = shared.trim();
+        if (shared.contains("minimamail:")) {
+            String key = MailAddress.directKey(shared);
+            return key == null ? "" : key;
+        }
         int bar = shared.indexOf('|');
         if (bar > 0) {
             String key = shared.substring(0, bar).trim();
@@ -1239,13 +1251,16 @@ public class MainActivity extends AppCompatActivity {
 
         // To
         LinearLayout toRow = fieldRow("To");
-        to.setHint("0x… Mail key");
+        to.setHint("Six words, contact link or Mail key");
         styleFieldInput(to, true);
         toRow.addView(to, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         toRow.addView(fieldChip(R.drawable.ic_scan, "Scan", v -> startScan(to)));
         toRow.addView(fieldChip(R.drawable.ic_contacts, null, v -> pickContact(to)));
         if (prefillKey != null) to.setText(prefillKey);
         col.addView(toRow);
+        TextView enterWords = textButton("Enter address words");
+        enterWords.setOnClickListener(v -> enterAddressWords(to));
+        col.addView(enterWords);
         col.addView(hairline());
 
         // Subject
@@ -1275,18 +1290,14 @@ public class MainActivity extends AppCompatActivity {
         attachRow.setOrientation(LinearLayout.HORIZONTAL);
         attachRow.setPadding(dp(14), dp(10), dp(14), dp(10));
         LinearLayout photo = attachChip(R.drawable.ic_photo, "Photo");
-        photo.setOnClickListener(v -> {
-            String k = acceptKeyShare(to.getText().toString());
-            if (!CommsIdentity.isValidPublicId(k)) { toast("Enter a valid Mail key first."); return; }
+        photo.setOnClickListener(v -> resolveRecipient(to, k -> {
             imagePickContact = k; imagePickSubject = subject.getText().toString().trim();
             imagePicker.launch("image/*");
-        });
+        }));
         LinearLayout funds = attachChip(R.drawable.ic_coin, "Send funds");
-        funds.setOnClickListener(v -> {
-            String k = acceptKeyShare(to.getText().toString());
-            if (!CommsIdentity.isValidPublicId(k)) { toast("Enter a valid Mail key first."); return; }
+        funds.setOnClickListener(v -> resolveRecipient(to, k -> {
             showSendFundsSheet(k, subject.getText().toString().trim());
-        });
+        }));
         attachRow.addView(photo);
         View gap = new View(this);
         attachRow.addView(gap, new LinearLayout.LayoutParams(dp(10), 1));
@@ -1307,14 +1318,12 @@ public class MainActivity extends AppCompatActivity {
         hint.addView(ht, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         col.addView(hint);
 
-        sendBtn.setOnClickListener(v -> {
-            String k = acceptKeyShare(to.getText().toString());
+        sendBtn.setOnClickListener(v -> resolveRecipient(to, k -> {
             String subj = subject.getText().toString().trim();
             String text = body.getText().toString();
-            if (!CommsIdentity.isValidPublicId(k)) { toast("That doesn't look like a valid Mail key."); return; }
             if (text.trim().isEmpty()) { toast("Write a message first."); return; }
             doSend(sendBtn, k, subj, text, () -> { pop(); openConversation(k, subj); });
-        });
+        }));
 
         return col;
     }
@@ -1407,9 +1416,30 @@ public class MainActivity extends AppCompatActivity {
                 mid.addView(nm); mid.addView(kv); row.addView(mid);
                 row.setOnClickListener(v -> push(buildCompose(key, null)));
                 row.setOnLongClickListener(v -> {
-                    new AlertDialog.Builder(MainActivity.this).setMessage("Delete contact " + name + "?")
-                            .setPositiveButton("Delete", (d, w) -> io.execute(() -> { db.deleteContact(id); ui.post(() -> { contactNames = null; refreshFolderIfVisible(); }); }))
-                            .setNegativeButton("Cancel", null).show();
+                    AlertDialog.Builder actions = new AlertDialog.Builder(MainActivity.this).setTitle(name)
+                            .setPositiveButton("Delete contact", (d, w) -> {
+                                if (!key.equals(myId)) AddressRenewal.disable(MainActivity.this, key);
+                                io.execute(() -> { db.deleteContact(id); db.setMeta("card:" + key, "");
+                                    ui.post(() -> { contactNames = null; refreshFolderIfVisible(); }); });
+                            }).setNegativeButton("Cancel", null);
+                    MailAddress.Card card = MailAddress.link(db.getMeta("card:" + key, ""));
+                    if (MailAddress.isKey(key) && !key.equalsIgnoreCase(myId))
+                        actions.setNeutralButton(AddressRenewal.enabled(MainActivity.this,key) ? "Stop relaying" : "Relay address",
+                                (d,w) -> {
+                                    if (AddressRenewal.enabled(MainActivity.this,key)) {
+                                        AddressRenewal.disable(MainActivity.this, key); toast("Relay stopped."); return;
+                                    }
+                                    if (card != null) { changePublication(card); return; }
+                                    MailBeacon.find(node, MailAddress.phrase(key), MailBeacon.DISCOVERY, (found, error) -> {
+                                        if (found == null || !key.equalsIgnoreCase(found.key)) {
+                                            toast(error == null ? "Ask this contact to publish their address first." : error);
+                                            return;
+                                        }
+                                        db.setMeta("card:" + key, found.link());
+                                        changePublication(found);
+                                    });
+                                });
+                    actions.show();
                     return true;
                 });
             }
@@ -1428,6 +1458,7 @@ public class MainActivity extends AppCompatActivity {
         form.setGravity(Gravity.CENTER_HORIZONTAL);
 
         form.addView(avatar(myId, myName, 72));
+        if (myId != null) addAddressControls(form);
 
         if (myId != null) {
             Bitmap qr = QrUtil.qr(keyShare(), dp(200));
@@ -2174,8 +2205,12 @@ public class MainActivity extends AppCompatActivity {
     private void addContactDialog(String prefillKey) {
         LinearLayout box = pad(column());
         final EditText name = input("Name");
-        final EditText key = input("0x… their Mail key");
-        if (prefillKey != null) key.setText(prefillKey);
+        final EditText key = input("Six words, contact link or Mail key");
+        if (prefillKey != null) {
+            String linked = MailAddress.directKey(prefillKey);
+            key.setText(linked == null ? prefillKey : linked);
+            if (linked != null) box.addView(label(MailAddress.phrase(linked)));
+        }
         LinearLayout scan = new LinearLayout(this);
         scan.setOrientation(LinearLayout.HORIZONTAL);
         scan.setGravity(Gravity.CENTER_VERTICAL);
@@ -2188,13 +2223,105 @@ public class MainActivity extends AppCompatActivity {
         scan.setOnClickListener(v -> startScan(key));
         box.addView(label("Name")); box.addView(name);
         box.addView(label("Mail key")); box.addView(key); box.addView(scan);
-        new AlertDialog.Builder(this).setTitle("Add contact").setView(box)
-                .setPositiveButton("Add", (d, w) -> {
-                    String n = name.getText().toString().trim(), k = acceptKeyShare(key.getText().toString());
-                    if (n.isEmpty() || !CommsIdentity.isValidPublicId(k)) { toast("Enter a name and a valid Mail key."); return; }
-                    io.execute(() -> { db.addContact(n, k); ui.post(() -> { contactNames = null; refreshFolderIfVisible(); }); });
-                })
-                .setNegativeButton("Cancel", null).show();
+        TextView enter = textButton("Enter address words");
+        enter.setOnClickListener(v -> enterAddressWords(key)); box.addView(enter);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Add contact").setView(box)
+                .setPositiveButton("Add", null).setNegativeButton("Cancel", null).create();
+        dialog.setOnShowListener(unused -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String n = name.getText().toString().trim();
+            if (n.isEmpty()) { name.setError("Enter a name"); return; }
+            resolveRecipient(key, k -> {
+                db.addContact(n, k);
+                contactNames = null;
+                dialog.dismiss();
+                refreshFolderIfVisible();
+            });
+        }));
+        dialog.show();
+    }
+
+    private void enterAddressWords(EditText target) {
+        AddressWordEntry entry = new AddressWordEntry(this, Design.TEXT);
+        ScrollView scroll = new ScrollView(this); scroll.addView(entry.view);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Mail address words").setView(scroll)
+                .setPositiveButton("Use address", null).setNegativeButton("Cancel", null).create();
+        dialog.setOnShowListener(unused -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String words = entry.phrase();
+            if (words == null) { toast("Check word " + entry.firstProblem()); return; }
+            target.setText(MailAddress.normalize(words));
+            dialog.dismiss();
+        }));
+        dialog.show();
+    }
+
+    private void resolveRecipient(EditText field, java.util.function.Consumer<String> use) {
+        String typed = field.getText().toString();
+        String key = acceptKeyShare(typed);
+        if (MailAddress.isKey(key)) { use.accept(key); return; }
+        // Older Mail clients also accepted bare 128-digit keys.
+        if (key.matches("[0-9a-fA-F]{128}")) { use.accept(key); return; }
+        String phrase = MailAddress.normalize(typed);
+        if (phrase == null) { field.setError("Enter six address words, a contact link or a Mail key."); return; }
+        String local = null;
+        for (String[] contact : db.contacts()) {
+            String id = contact[2];
+            if (!MailAddress.isKey(id) || !MailAddress.phrase(id).equals(phrase)) continue;
+            if (local != null && !local.equalsIgnoreCase(id)) { field.setError("Ambiguous address. Ask for a contact link."); return; }
+            local = id;
+        }
+        if (local != null) { use.accept(local); return; }
+        if (field.getTag() != null) return;
+        field.setTag(typed);
+        toast("Looking up address…");
+        MailBeacon.find(node, phrase, MailBeacon.DISCOVERY, (card, error) -> {
+            field.setTag(null);
+            if (!field.isAttachedToWindow() || !typed.equals(field.getText().toString())) return;
+            if (error != null || card == null) {
+                field.setError(error == null ? "Address isn’t currently discoverable. Ask for a contact link." : error);
+                return;
+            }
+            db.setMeta("card:" + card.key, card.link());
+            use.accept(card.key);
+        });
+    }
+
+    private void addAddressControls(LinearLayout form) {
+        String phrase = MailAddress.phrase(myId);
+        TextView words = label(phrase);
+        words.setTextIsSelectable(true); form.addView(words);
+        TextView copyWords = textButton("Copy address words");
+        copyWords.setOnClickListener(v -> { copy(phrase, "Mail address"); toast("Address copied."); });
+        form.addView(copyWords);
+        TextView share = accentButton("Share contact link");
+        share.setOnClickListener(v -> {
+            Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain")
+                    .putExtra(Intent.EXTRA_TEXT, phrase + "\n" + MailAddress.directLink(myId));
+            startActivity(Intent.createChooser(send, "Share Mail contact"));
+        });
+        form.addView(share);
+        boolean active = AddressRenewal.enabled(this, myId);
+        TextView publish = textButton(active ? "Stop publishing address" : "Publish my address");
+        publish.setOnClickListener(v -> changePublication(MailAddress.sign(identity)));
+        form.addView(publish);
+        if (active) {
+            String status = AddressRenewal.prefs(this).getString("status-" + myId, "Publication scheduled");
+            form.addView(label(status));
+            if (MailBeacon.PENDING_STATUS.equals(status)) form.addView(label("If you dismissed the request in Core, stop publishing and enable it again to retry."));
+        }
+    }
+
+    private void changePublication(MailAddress.Card card) {
+        if (AddressRenewal.enabled(this, card.key)) {
+            AddressRenewal.disable(this, card.key);
+            toast("This device stopped renewing the address.");
+            refreshFolderIfVisible(); return;
+        }
+        new AlertDialog.Builder(this).setTitle("Keep this address discoverable?")
+                .setMessage("Your node will post a public contact card and renew it when it fades. Each post uses one nano-Minima plus a wallet signing operation. Other devices can relay the card.")
+                .setPositiveButton("Enable", (d,w) -> {
+                    AddressRenewal.enable(this, card); refreshFolderIfVisible();
+                    toast("Address publication scheduled.");
+                }).setNegativeButton("Cancel", null).show();
     }
 
     private void pickContact(EditText target) {
