@@ -329,8 +329,8 @@ public class MainActivity extends AppCompatActivity {
         brand.setText(bs);
         brand.setTextColor(Design.TEXT); brand.setTextSize(16f); brand.setTypeface(Typeface.DEFAULT_BOLD);
         TextView me = new TextView(this);
-        me.setText(myId == null ? "connecting to your node…" : "you · " + myId);
-        me.setTextColor(Design.DIM); me.setTextSize(11f); me.setTypeface(Typeface.MONOSPACE);
+        me.setText(myId == null ? "connecting to your node…" : "you · " + MailAddress.phrase(myId));
+        me.setTextColor(Design.TEXT); me.setTextSize(14f);
         me.setPadding(0, dp(3), 0, 0);
         // NB: no click handler on the header — it sits under the hamburger's screen position, so a
         // double-tap on the hamburger would silently navigate. "Your key" below covers the shortcut.
@@ -519,12 +519,14 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void adoptIdentity(CommsIdentity id) {
+    @androidx.annotation.VisibleForTesting(otherwise = androidx.annotation.VisibleForTesting.PRIVATE)
+    void adoptIdentity(CommsIdentity id) {
         if (myId != null && !myId.equals(id.publicId()) && AddressRenewal.enabled(this, myId))
             AddressRenewal.disable(this, myId);
         identity = id;
         crypto = new LocalEcCryptoProvider(ls, id);
         myId = id.publicId();
+        rebuildNav();
         scanner = new CommsScanner(node, crypto, db, myId, new CommsScanner.Listener() {
             @Override public void onDone(boolean ok, int newCount) { onScanDone(ok, newCount); }
             @Override public void onContactPayaddrUpdated(String publicId) {

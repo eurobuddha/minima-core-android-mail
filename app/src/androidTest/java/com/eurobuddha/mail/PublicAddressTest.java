@@ -2,6 +2,9 @@ package com.eurobuddha.mail;
 
 import static org.junit.Assert.*;
 import android.content.Context;
+import android.view.View;
+import androidx.drawerlayout.widget.DrawerLayout;
+import androidx.test.core.app.ActivityScenario;
 import androidx.test.platform.app.InstrumentationRegistry;
 import com.eurobuddha.comms.CommsIdentity;
 import com.eurobuddha.comms.Sodium;
@@ -42,6 +45,21 @@ public class PublicAddressTest {
         assertNull(MailAddress.directKey(MailAddress.directLink(KEY).replace("reunion", "lemon")));
         assertNull(MailAddress.directKey(MailAddress.directLink(KEY) + "|address"));
         assertNull(MailAddress.verify(KEY + "1", SIG, WORDS));
+    }
+    @Test public void openDrawerShowsAddressWhenAnExistingIdentityLoads() {
+        CommsIdentity id = CommsIdentity.fromSeed(Sodium.get(), "test-fixture-only-mail-address-A".getBytes(StandardCharsets.UTF_8));
+        try (ActivityScenario<MainActivity> screen = ActivityScenario.launch(MainActivity.class)) {
+            screen.onActivity(activity -> {
+                android.view.ViewGroup content = activity.findViewById(android.R.id.content);
+                DrawerLayout drawer = (DrawerLayout) content.getChildAt(0);
+                drawer.openDrawer(androidx.core.view.GravityCompat.START, false);
+                activity.adoptIdentity(id);
+                java.util.ArrayList<View> matches = new java.util.ArrayList<>();
+                drawer.findViewsWithText(matches, "you · " + WORDS, View.FIND_VIEWS_WITH_TEXT);
+                assertEquals(1, matches.size());
+                assertTrue(matches.get(0).isShown());
+            });
+        }
     }
     @Test public void completePasteFillsExactlySixPublicBoxes() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
