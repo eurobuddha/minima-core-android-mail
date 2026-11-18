@@ -18,6 +18,16 @@ public class PublicAddressTest {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         MailAddress.init(context);
     }
+    @Test public void unlockedVaultProducesTheDesktopMailAddress() throws Exception {
+        String sample = "0xa5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5";
+        org.json.JSONObject vault = new org.json.JSONObject().put("locked", false)
+                .put("seed", sample).put("phrase", "fixture words");
+        byte[] seed = NodeIdentitySeed.take(new org.json.JSONObject().put("status", true).put("response", vault));
+        CommsIdentity id = CommsIdentity.fromSeed(Sodium.get(), seed);
+        assertEquals("0xf1c17825d7c99e703a34e7bc20b13653de34f663fd9ab91a771d2c03b79abb0f"
+                + "9ca62f408455ca596471b9476fb61a7755d4af8d59cfaf9eba634f97d616e002", id.publicId());
+        assertEquals("assist-purpose-unveil-talk-tomato-subject", MailAddress.phrase(id.publicId()));
+    }
     @Test public void desktopAndAndroidShareAddressAndSignedCard() {
         CommsIdentity id = CommsIdentity.fromSeed(Sodium.get(), "test-fixture-only-mail-address-A".getBytes(StandardCharsets.UTF_8));
         MailAddress.Card card = MailAddress.sign(id);

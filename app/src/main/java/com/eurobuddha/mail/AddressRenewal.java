@@ -47,9 +47,9 @@ public final class AddressRenewal extends Worker {
         AtomicBoolean started = new AtomicBoolean();
         main.post(() -> {
             if (!active.get() || isStopped()) { finished.countDown(); return; }
-            node = new NodeApi(c, paired -> {
+            node = new NodeApi(c, (paired, admin) -> {
                 if (!active.get() || !started.compareAndSet(false, true)) return;
-                if (!paired) { record(key, "Enable Mail in Core"); finished.countDown(); return; }
+                if (!paired || !admin) { record(key, "Enable Mail and grant Admin in Core"); finished.countDown(); return; }
                 MailBeacon.renew(node, card, () -> active.get() && !isStopped() && enabled(c,key),
                         prefs(c).getBoolean("pending-" + key, false), status -> {
                     record(key, status); finished.countDown();

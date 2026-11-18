@@ -27,7 +27,7 @@ public class NodeApi {
     }
 
     public interface PairingListener {
-        void onEnabled(boolean enabled);
+        void onEnabled(boolean enabled, boolean admin);
     }
 
     /** Returned as the error message when the node says we are not enabled yet. */
@@ -63,9 +63,10 @@ public class NodeApi {
             @Override
             public void response(JSONObject zResponse) {
                 final boolean enabled = zResponse.optBoolean("enabled", false);
+                final boolean admin = zResponse.optBoolean("admin", false);
                 mMain.post(() -> {
                     if (dead()) return;
-                    if (mPairing != null) mPairing.onEnabled(enabled);
+                    if (mPairing != null) mPairing.onEnabled(enabled, admin);
                 });
             }
         });
@@ -104,7 +105,7 @@ public class NodeApi {
                     // "enabled":false only appears on the gating reply; real command
                     // responses omit the key, so default true.
                     if (!zResponse.optBoolean("enabled", true)) {
-                        if (mPairing != null) mPairing.onEnabled(false);
+                        if (mPairing != null) mPairing.onEnabled(false, false);
                         if (cb != null) cb.onError(ERR_NOT_ENABLED);
                         return;
                     }

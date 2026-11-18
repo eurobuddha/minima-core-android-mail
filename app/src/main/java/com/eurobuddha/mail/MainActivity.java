@@ -99,7 +99,8 @@ public class MainActivity extends AppCompatActivity {
     private CommsIdentity identity;
     private IdentityStore identityStore;
     private boolean identityBusy;
-    private AlertDialog identityPrompt;
+    private boolean coreOpenedForSetup;
+    private TextView setupMessage;
     private CommsScanner scanner;
     private String myId, myName = "", myPayaddr = "";
     private boolean paired = false;
@@ -231,9 +232,16 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
+    @Override protected void onRestart() {
+        super.onRestart();
+        if (coreOpenedForSetup) {
+            coreOpenedForSetup = false;
+            recreate(); // Re-register with Core to pick up the current Enabled and Admin settings.
+        }
+    }
+
     @Override protected void onDestroy() {
         super.onDestroy();
-        if (identityPrompt != null) identityPrompt.dismiss();
         ui.removeCallbacks(freshTick);
         if (notifyReceiver != null) try { unregisterReceiver(notifyReceiver); } catch (Exception ignored) {}
         if (node != null) node.onDestroy();
@@ -400,13 +408,14 @@ public class MainActivity extends AppCompatActivity {
 
     // ---- pairing + identity ----
 
-    private void onPaired(boolean enabled) {
+    private void onPaired(boolean enabled, boolean admin) {
         paired = enabled;
-        pairingBanner.setVisibility(enabled ? View.GONE : View.VISIBLE);
+        if (!enabled || !admin) showSetupMessage("Open Minima Core → Apps, enable Minima Mail and grant it Admin access.");
+        else pairingBanner.setVisibility(View.GONE);
         if (enabled) {
             if (chainBlock == 0) fetchBlock();
             fetchMyPayaddr();
-            if (crypto == null) setupIdentity(); else requestScan();
+            if (crypto == null) setupIdentity(admin); else requestScan();
         }
     }
 
@@ -436,7 +445,7 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void setupIdentity() {
+    private void setupIdentity(boolean admin) {
         if (identityBusy || identity != null || isFinishing() || isDestroyed()) return;
         identityBusy = true;
         io.execute(() -> {
@@ -448,7 +457,8 @@ public class MainActivity extends AppCompatActivity {
                     if (saved != null) {
                         identityBusy = false;
                         adoptIdentity(saved); refreshFolderIfVisible(); requestScan();
-                    } else requestNodeIdentity();
+                    } else if (paired && admin) requestNodeIdentity();
+                    else identityBusy = false;
                 });
             } catch (Exception unreadable) {
                 ui.post(() -> {
@@ -464,29 +474,48 @@ public class MainActivity extends AppCompatActivity {
         node.cmd("vault action:seed", new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
                 if (isFinishing() || isDestroyed()) return;
-                JSONObject r = j.optJSONObject("response");
-                String ikm = r == null || !j.optBoolean("status", false) || r.optBoolean("locked", false)
-                        ? "" : r.optString("seed", r.optString("phrase", ""));
-                if (ikm.isEmpty()) askForSeed(); else deriveIdentity(ikm);
+                try {
+                    deriveIdentity(NodeIdentitySeed.take(j));
+                } catch (IllegalStateException unavailable) {
+                    identityBusy = false;
+                    showSetupMessage(unavailable.getMessage());
+                }
             }
             @Override public void onError(String m) {
-                if (isFinishing() || isDestroyed()) return;
-                if (NodeApi.ERR_NOT_ENABLED.equals(m)) { identityBusy = false; pairingBanner.setVisibility(View.VISIBLE); return; }
-                askForSeed();
+                identityBusy = false;
+                if (!NodeApi.ERR_NOT_ENABLED.equals(m))
+                    showSetupMessage("Mail could not reach your node. Start Minima Core and try again.");
             }
         });
     }
 
-    private void deriveIdentity(final String ikm) {
+    private void deriveIdentity(byte[] seed) {
         io.execute(() -> {
             try {
-                byte[] seed = ikm.startsWith("0x") ? Hex.from(ikm) : ikm.getBytes(StandardCharsets.UTF_8);
-                CommsIdentity id = CommsIdentity.fromSeed(ls, seed);
-                java.util.Arrays.fill(seed, (byte)0);
-                if (identityStore == null) identityStore = new IdentityStore(this);
-                identityStore.save(id);
-                ui.post(() -> { identityBusy = false; if (isFinishing() || isDestroyed()) return; adoptIdentity(id); refreshFolderIfVisible(); requestScan(); });
-            } catch (Exception e) { ui.post(() -> { identityBusy = false; if (!isFinishing() && !isDestroyed()) toast("Identity could not be saved. Existing data was preserved."); }); }
+                // A backup restore may have finished while the vault request was in flight.
+                CommsIdentity saved = identityStore.load();
+                final CommsIdentity id;
+                if (saved != null) id = saved;
+                else {
+                    id = CommsIdentity.fromSeed(ls, seed);
+                    identityStore.save(id);
+                }
+                ui.post(() -> {
+                    identityBusy = false;
+                    if (isFinishing() || isDestroyed()) return;
+                    adoptIdentity(id);
+                    refreshFolderIfVisible();
+                    requestScan();
+                });
+            } catch (Exception failed) {
+                ui.post(() -> {
+                    identityBusy = false;
+                    if (!isFinishing() && !isDestroyed())
+                        showSetupMessage("Mail could not save your identity. Try again or restore a backup from Your key.");
+                });
+            } finally {
+                java.util.Arrays.fill(seed, (byte) 0);
+            }
         });
     }
 
@@ -540,22 +569,6 @@ public class MainActivity extends AppCompatActivity {
             return key;
         }
         return shared;
-    }
-
-    private void askForSeed() {
-        if (isFinishing() || isDestroyed() || (identityPrompt != null && identityPrompt.isShowing())) return;
-        final EditText in = input("Your Minima seed phrase (any words / format)");
-        in.setMinLines(3);
-        identityPrompt = new AlertDialog.Builder(this)
-                .setTitle("Create your Mail identity")
-                .setMessage("Your Mail key is derived from your Minima seed (so it's recoverable). Paste your seed phrase once. Only your derived Mail keys are stored, encrypted on this device; the seed phrase is never stored.")
-                .setView(in)
-                .setPositiveButton("Create", (d, w) -> { String s = in.getText().toString().trim(); if (!s.isEmpty()) { identityBusy = true; deriveIdentity(s); } else identityBusy = false; })
-                .setNegativeButton("Restore from backup instead", (d, w) -> { identityBusy = false; importLauncher.launch(new String[]{"application/json", "*/*"}); })
-                .create();
-        identityPrompt.setOnCancelListener(d -> identityBusy = false);
-        identityPrompt.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
-        identityPrompt.show();
     }
 
     // ---- scanning ----
@@ -2363,16 +2376,32 @@ public class MainActivity extends AppCompatActivity {
 
     // ---- view helpers ----
 
+    private void showSetupMessage(String message) {
+        setupMessage.setText(message);
+        pairingBanner.setVisibility(View.VISIBLE);
+    }
+
     private LinearLayout buildPairingBanner() {
         LinearLayout b = new LinearLayout(this);
         b.setOrientation(LinearLayout.VERTICAL);
         b.setBackgroundColor(Design.SURFACE);
         b.setPadding(dp(16), dp(14), dp(16), dp(14));
-        TextView t1 = new TextView(this); t1.setText("Minima Mail is not enabled yet"); t1.setTextColor(Design.ACCENT_TEXT); t1.setTextSize(15f); t1.setTypeface(Typeface.DEFAULT_BOLD);
-        TextView t2 = new TextView(this); t2.setText("Open Minima Core → Apps and enable \"Minima Mail\", then come back."); t2.setTextColor(Design.DIM); t2.setTextSize(13f); t2.setPadding(0, dp(4), 0, dp(8));
+        setupMessage = new TextView(this);
+        setupMessage.setTextColor(Design.TEXT);
+        setupMessage.setTextSize(15f);
+        setupMessage.setPadding(0, 0, 0, dp(8));
         TextView open = accentButton("Open Minima Core");
-        open.setOnClickListener(v -> { Intent i = MinimaAPI.launchNode(this); if (i != null) startActivity(i); else toast("Minima Core isn't installed."); });
-        b.addView(t1); b.addView(t2); b.addView(open);
+        open.setOnClickListener(v -> {
+            Intent intent = MinimaAPI.launchNode(this);
+            if (intent == null) { toast("Minima Core isn't installed."); return; }
+            coreOpenedForSetup = true;
+            startActivity(intent);
+        });
+        TextView retry = textButton("Try again");
+        retry.setOnClickListener(v -> recreate());
+        b.addView(setupMessage);
+        b.addView(open);
+        b.addView(retry);
         return b;
     }
 

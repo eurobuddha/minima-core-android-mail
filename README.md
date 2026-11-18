@@ -8,8 +8,9 @@ a tiny coin on the chain carrying an end-to-end-encrypted blob, so only the reci
 ## How it works
 
 - **Identity** is derived **once** from the node seed (`vault action:seed`) via HKDF-SHA256 into an **X25519** box
-  keypair (encryption) + an **Ed25519** signing keypair — your `publicId` is `0x` + the two public keys. It's cached
-  locally and re-derived only on a seed restore; the raw seed is never stored.
+  keypair (encryption) + an **Ed25519** signing keypair — your `publicId` is `0x` + the two public keys. On first setup, enable Mail and grant Admin in Core → Apps, then return to Mail with the wallet unlocked.
+  Mail automatically derives the keys and caches them encrypted. Your six shareable words come from your public
+  Mail key. Existing and restored Mail identities take precedence.
 - **Sending** posts a `0.000000001` MINIMA coin to the shared sentinel address **`0x434841494E4D41494C`**
   ("CHAINMAIL") with the message sealed (`crypto_box_seal`) into coin **state port 99**.
 - **Receiving** scans the CHAINMAIL address (`coins address:…`) and **trial-decrypts** each blob with your box key —
