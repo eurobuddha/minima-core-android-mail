@@ -72,11 +72,13 @@ final class AddressWordEntry {
     private final TextView count;
 
     private Runnable changed;
+    private Runnable accepted;
     private java.util.function.Consumer<String> pastedKey;
     private boolean mute;
 
     /** In compose the six public word boxes are the primary recipient control. */
-    void bindRecipient(EditText raw, TextView toggle, CharSequence keyLabel, CharSequence wordsLabel) {
+    void bindRecipient(EditText raw, TextView toggle, CharSequence keyLabel, CharSequence wordsLabel,
+                       java.util.function.Consumer<String> onComplete) {
         Runnable showKey = () -> {
             view.setVisibility(View.GONE);
             raw.setVisibility(View.VISIBLE);
@@ -86,14 +88,17 @@ final class AddressWordEntry {
             raw.setVisibility(View.GONE);
             view.setVisibility(View.VISIBLE);
             toggle.setText(keyLabel);
-            String words = phrase();
-            raw.setText(words == null ? "" : MailAddress.normalize(words));
+            raw.setText("");
         };
         changed = () -> {
-            if (view.getVisibility() == View.VISIBLE) {
-                String words = phrase();
-                raw.setText(words == null ? "" : MailAddress.normalize(words));
-            }
+            if (view.getVisibility() == View.VISIBLE && raw.length() > 0) raw.setText("");
+        };
+        accepted = () -> {
+            String address = MailAddress.normalize(phrase());
+            if (address == null) return;
+            showKey.run();
+            onComplete.accept(address);
+            raw.setText(address); // The compose watcher now starts lookup for the displayed address.
         };
         pastedKey = text -> { showKey.run(); raw.setText(text); raw.requestFocus(); };
         raw.addTextChangedListener(new TextWatcher() {
@@ -135,11 +140,11 @@ final class AddressWordEntry {
             if (i % 3 == 0) {
                 row = new LinearLayout(c);
                 LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-                rl.topMargin = dp(6); grid.addView(row, rl);
+                rl.topMargin = dp(2); grid.addView(row, rl);
             }
             EditText e = box(i);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-            lp.leftMargin = i % 3 == 0 ? 0 : dp(6);
+            lp.leftMargin = i % 3 == 0 ? 0 : dp(3);
             row.addView(e, lp);
             boxes.add(e); prevLens.add(0);
         }
@@ -148,7 +153,7 @@ final class AddressWordEntry {
         suggScroll = new HorizontalScrollView(c); suggScroll.setHorizontalScrollBarEnabled(false);
         suggRow = new LinearLayout(c); suggScroll.addView(suggRow);
         LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        sl.topMargin = dp(6); view.addView(suggScroll, sl);
+        sl.topMargin = dp(2); view.addView(suggScroll, sl);
 
         count = new TextView(c); count.setTextColor(this.textColor); count.setTextSize(12); count.setTypeface(this.mono);
         view.addView(count);
@@ -186,6 +191,12 @@ final class AddressWordEntry {
             @Override public void onTextChanged(CharSequence s, int a, int b, int x) {}
             @Override public void afterTextChanged(Editable s) { if (!mute) onEdit(idx); }
         });
+        e.setOnEditorActionListener((field, action, event) -> {
+            String word = field.getText().toString();
+            if (accepted == null || !isWord(word)) return false;
+            commit(idx, word);
+            return true;
+        });
         e.setOnFocusChangeListener((v, has) -> { if (has) showSuggestions(idx); });
         return e;
     }
@@ -201,6 +212,9 @@ final class AddressWordEntry {
         List<String> pasted = splitPasted(raw);
         // Pasted words (or a typed space): spread them over this box and the ones after it.
         if (pasted.size() > 1) { spread(idx, pasted); return; }
+        if (accepted != null && pasted.size() == 1 && raw.endsWith(" ") && isWord(pasted.get(0))) {
+            commit(idx, pasted.get(0)); return;
+        }
         if (changed == null && idx == tailBox && !tail.isEmpty() && System.currentTimeMillis() < tailUntil) {
             String typed = letters(raw);
             if (!typed.isEmpty() && tail.startsWith(typed)) {   // still typing the word that just completed: drop it
@@ -247,13 +261,16 @@ final class AddressWordEntry {
         tail = ""; tailBox = -1;
         focusNextProblem(i - 1);
         refresh();
+        if (accepted != null) accepted.run();
     }
 
     /** Returns the box now focused, -1 when none. */
     private int commit(int idx, String w) {
         set(boxes.get(idx), w); prevLens.set(idx, w.length());
         style(idx); refresh();
-        return focusNextProblem(idx);
+        int next = focusNextProblem(idx);
+        if (next < 0 && accepted != null) accepted.run();
+        return next;
     }
 
     /** Forward only: wrapping to an earlier empty box let a finished word's typed tail land there (review M3). */

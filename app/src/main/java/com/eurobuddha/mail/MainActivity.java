@@ -1317,8 +1317,15 @@ public class MainActivity extends AppCompatActivity {
         to.setHint("Six words, contact link or Mail key");
         styleFieldInput(to, true);
         toRow.addView(to, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        toRow.addView(fieldChip(R.drawable.ic_scan, "Scan", v -> startScan(to)));
-        toRow.addView(fieldChip(R.drawable.ic_contacts, null, v -> pickContact(to)));
+        View scan = fieldChip(R.drawable.ic_scan, "Scan", v -> startScan(to));
+        View pick = fieldChip(R.drawable.ic_contacts, null, v -> pickContact(to));
+        toRow.addView(scan); toRow.addView(pick);
+        TextView compact = new TextView(this);
+        compact.setTextSize(13f); compact.setTextColor(Design.TEXT);
+        compact.setPadding(0, dp(4), 0, dp(4));
+        compact.setFocusableInTouchMode(true);
+        compact.setVisibility(View.GONE);
+        toRow.addView(compact, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         if (prefillKey != null) to.setText(prefillKey);
         col.addView(toRow);
         AddressWordEntry words = new AddressWordEntry(this, Design.TEXT);
@@ -1326,7 +1333,20 @@ public class MainActivity extends AppCompatActivity {
         col.addView(words.view);
         TextView toggle = textButton("Mail key");
         col.addView(toggle);
-        words.bindRecipient(to, toggle, "Paste link or Mail key", "Enter address words");
+        words.bindRecipient(to, toggle, "Paste link or Mail key", "Enter address words", address -> {
+            compact.setText(address);
+            compact.setVisibility(View.VISIBLE);
+            compact.requestFocus();
+            to.setVisibility(View.GONE); scan.setVisibility(View.GONE); pick.setVisibility(View.GONE);
+            toggle.setVisibility(View.GONE);
+            new WindowInsetsControllerCompat(getWindow(), compact).hide(WindowInsetsCompat.Type.ime());
+        });
+        compact.setOnClickListener(v -> {
+            compact.setVisibility(View.GONE); scan.setVisibility(View.VISIBLE); pick.setVisibility(View.VISIBLE);
+            toggle.setVisibility(View.VISIBLE);
+            toggle.performClick();
+            new WindowInsetsControllerCompat(getWindow(), words.view).show(WindowInsetsCompat.Type.ime());
+        });
         TextView addressStatus = label("");
         col.addView(addressStatus);
         col.addView(hairline());

@@ -171,6 +171,8 @@ public class PublicAddressTest {
                     assertEquals(word, box.getText().toString());
                     i++;
                 }
+                assertEquals(View.GONE, words.getVisibility());
+                assertNotNull(visibleText(form, WORDS));
             });
             assertTrue("sixth word resolves before Send", ready.await(30, java.util.concurrent.TimeUnit.SECONDS));
             screen.onActivity(activity -> {
@@ -181,6 +183,11 @@ public class PublicAddressTest {
                 android.widget.EditText box = (android.widget.EditText) ((android.widget.LinearLayout) grid.getChildAt(1)).getChildAt(2);
                 assertTrue(send.isEnabled());
                 assertEquals("Recipient ready", ((android.widget.TextView) form.getChildAt(4)).getText().toString());
+                android.widget.TextView summary = visibleText(form, WORDS);
+                assertTrue(summary.performClick());
+                assertFalse(send.isEnabled());
+                assertTrue(grid.isShown());
+                assertEquals("bubble", box.getText().toString());
                 box.setText("bub");
                 assertFalse(send.isEnabled());
                 ((android.widget.TextView) form.getChildAt(3)).performClick();
