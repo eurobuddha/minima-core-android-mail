@@ -46,6 +46,28 @@ public class PublicAddressTest {
         assertNull(MailAddress.directKey(MailAddress.directLink(KEY) + "|address"));
         assertNull(MailAddress.verify(KEY + "1", SIG, WORDS));
     }
+    @Test public void ownAddressDefaultsOnAndRemembersStop() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        CommsIdentity id = CommsIdentity.fromSeed(Sodium.get(), "default-publication-test".getBytes(StandardCharsets.UTF_8));
+        String key = id.publicId();
+        try {
+            AddressRenewal.ensureOwn(context, id);
+            assertTrue(AddressRenewal.enabled(context, key));
+            MailAddress.Card card = MailAddress.link(AddressRenewal.prefs(context).getString(key, ""));
+            assertNotNull(card);
+            assertEquals(key, card.key);
+            AddressRenewal.stopOwn(context, key);
+            AddressRenewal.ensureOwn(context, id);
+            assertFalse(AddressRenewal.enabled(context, key));
+            AddressRenewal.enable(context, card);
+            AddressRenewal.ensureOwn(context, id);
+            assertTrue(AddressRenewal.enabled(context, key));
+        } finally {
+            AddressRenewal.disable(context, key);
+            AddressRenewal.prefs(context).edit().remove("off-" + key).commit();
+        }
+    }
+
     @Test public void openDrawerShowsAddressWhenAnExistingIdentityLoads() {
         CommsIdentity id = CommsIdentity.fromSeed(Sodium.get(), "test-fixture-only-mail-address-A".getBytes(StandardCharsets.UTF_8));
         try (ActivityScenario<MainActivity> screen = ActivityScenario.launch(MainActivity.class)) {

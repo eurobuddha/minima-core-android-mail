@@ -526,6 +526,7 @@ public class MainActivity extends AppCompatActivity {
         identity = id;
         crypto = new LocalEcCryptoProvider(ls, id);
         myId = id.publicId();
+        AddressRenewal.ensureOwn(this, id);
         rebuildNav();
         scanner = new CommsScanner(node, crypto, db, myId, new CommsScanner.Listener() {
             @Override public void onDone(boolean ok, int newCount) { onScanDone(ok, newCount); }
@@ -2410,18 +2411,8 @@ public class MainActivity extends AppCompatActivity {
         String phrase = MailAddress.phrase(myId);
         TextView words = label(phrase);
         words.setTextIsSelectable(true); form.addView(words);
-        TextView copyWords = textButton("Copy address words");
-        copyWords.setOnClickListener(v -> { copy(phrase, "Mail address"); toast("Address copied."); });
-        form.addView(copyWords);
-        TextView share = accentButton("Share contact link");
-        share.setOnClickListener(v -> {
-            Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain")
-                    .putExtra(Intent.EXTRA_TEXT, phrase + "\n" + MailAddress.directLink(myId));
-            startActivity(Intent.createChooser(send, "Share Mail contact"));
-        });
-        form.addView(share);
         boolean active = AddressRenewal.enabled(this, myId);
-        TextView publish = textButton(active ? "Stop publishing address" : "Publish my address");
+        TextView publish = accentButton(active ? "Stop publishing address" : "Publish my address");
         publish.setOnClickListener(v -> changePublication(MailAddress.sign(identity)));
         form.addView(publish);
         if (active) {
@@ -2429,11 +2420,21 @@ public class MainActivity extends AppCompatActivity {
             form.addView(label(status));
             if (MailBeacon.PENDING_STATUS.equals(status)) form.addView(label("If you dismissed the request in Core, stop publishing and enable it again to retry."));
         }
+        TextView copyWords = textButton("Copy address words");
+        copyWords.setOnClickListener(v -> { copy(phrase, "Mail address"); toast("Address copied."); });
+        form.addView(copyWords);
+        TextView share = textButton("Share contact link");
+        share.setOnClickListener(v -> {
+            Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain")
+                    .putExtra(Intent.EXTRA_TEXT, phrase + "\n" + MailAddress.directLink(myId));
+            startActivity(Intent.createChooser(send, "Share Mail contact"));
+        });
+        form.addView(share);
     }
 
     private void changePublication(MailAddress.Card card) {
         if (AddressRenewal.enabled(this, card.key)) {
-            AddressRenewal.disable(this, card.key);
+            AddressRenewal.stopOwn(this, card.key);
             toast("This device stopped renewing the address.");
             refreshFolderIfVisible(); return;
         }

@@ -2,6 +2,7 @@ package com.eurobuddha.mail;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import com.eurobuddha.comms.CommsIdentity;
 import android.os.Handler;
 import android.os.Looper;
 import androidx.annotation.NonNull;
@@ -16,19 +17,32 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** One unique periodic job per explicitly enabled public card. Workers never open a private key. */
+/** One unique periodic job per enabled public card. Workers never open a private key. */
 public final class AddressRenewal extends Worker {
     private final Handler main = new Handler(Looper.getMainLooper());
     private NodeApi node;
     public AddressRenewal(@NonNull Context ctx, @NonNull WorkerParameters params) { super(ctx, params); }
     static SharedPreferences prefs(Context c) { return c.getSharedPreferences("address_renewal", Context.MODE_PRIVATE); }
     static boolean enabled(Context c, String key) { return prefs(c).contains(key.toLowerCase(java.util.Locale.ROOT)); }
+    static void ensureOwn(Context c, CommsIdentity owner) {
+        String key = owner.publicId();
+        if (prefs(c).getBoolean("off-" + key, false)) return;
+        if (enabled(c, key)) schedule(c, key);
+        else enable(c, MailAddress.sign(owner));
+    }
+    static void stopOwn(Context c, String key) {
+        prefs(c).edit().putBoolean("off-" + key, true).apply();
+        disable(c, key);
+    }
     static void enable(Context c, MailAddress.Card card) {
-        prefs(c).edit().putString(card.key, card.link()).apply();
-        Data data = new Data.Builder().putString("key", card.key).build();
+        prefs(c).edit().remove("off-" + card.key).putString(card.key, card.link()).apply();
+        schedule(c, card.key);
+    }
+    private static void schedule(Context c, String key) {
+        Data data = new Data.Builder().putString("key", key).build();
         PeriodicWorkRequest job = new PeriodicWorkRequest.Builder(AddressRenewal.class, 4, TimeUnit.HOURS)
                 .setInputData(data).build();
-        WorkManager.getInstance(c).enqueueUniquePeriodicWork("mail-card-" + card.key, ExistingPeriodicWorkPolicy.KEEP, job);
+        WorkManager.getInstance(c).enqueueUniquePeriodicWork("mail-card-" + key, ExistingPeriodicWorkPolicy.KEEP, job);
     }
     static void disable(Context c, String key) {
         key = key.toLowerCase(java.util.Locale.ROOT);
