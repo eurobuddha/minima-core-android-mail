@@ -36,6 +36,19 @@ public class MailBeaconTest {
             JSONObject coin = new JSONObject().put("address",MailBeacon.ADDRESS).put("tokenid","0x00")
                     .put("state", new JSONObject().put("0",MailAddress.tag(card.phrase)).put("1",card.key).put("2","0x"+card.sig));
             JSONObject fresh = new JSONObject().put("status",true).put("response",new JSONArray().put(coin));
+            coin.put("created", "2427841");
+            NodeApi reader = mock(NodeApi.class);
+            doAnswer(call -> {
+                ((NodeApi.Cb) call.getArgument(1)).onResult(fresh);
+                return null;
+            }).when(reader).cmd(anyString(), any(NodeApi.Cb.class));
+            AtomicReference<Long> confirmed = new AtomicReference<>();
+            MailBeacon.inspect(reader, card.phrase, MailBeacon.DISCOVERY, (observed, block, error) -> {
+                assertNull(error);
+                assertEquals(card.key, observed.key);
+                confirmed.set(block);
+            });
+            assertEquals(Long.valueOf(2427841), confirmed.get());
             assertEquals(0, run(card, fresh, true, false));
             assertEquals(0, run(card, new JSONObject().put("status",false), true, false));
             assertEquals(0, run(card, empty, false, false));

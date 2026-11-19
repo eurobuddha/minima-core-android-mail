@@ -2415,11 +2415,7 @@ public class MainActivity extends AppCompatActivity {
         TextView publish = accentButton(active ? "Stop publishing address" : "Publish my address");
         publish.setOnClickListener(v -> changePublication(MailAddress.sign(identity)));
         form.addView(publish);
-        if (active) {
-            String status = AddressRenewal.prefs(this).getString("status-" + myId, "Publication scheduled");
-            form.addView(label(status));
-            if (MailBeacon.PENDING_STATUS.equals(status)) form.addView(label("If you dismissed the request in Core, stop publishing and enable it again to retry."));
-        }
+        showBeaconStatus(form, myId);
         TextView copyWords = textButton("Copy address words");
         copyWords.setOnClickListener(v -> { copy(phrase, "Mail address"); toast("Address copied."); });
         form.addView(copyWords);
@@ -2430,6 +2426,35 @@ public class MainActivity extends AppCompatActivity {
             startActivity(Intent.createChooser(send, "Share Mail contact"));
         });
         form.addView(share);
+    }
+
+    private void showBeaconStatus(LinearLayout form, final String key) {
+        final String phrase = MailAddress.phrase(key);
+        final TextView status = label("Checking beacon…");
+        status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        form.addView(status);
+        class Check implements Runnable, View.OnAttachStateChangeListener {
+            @Override public void run() {
+                if (!status.isAttachedToWindow() || isDestroyed() || isFinishing()) return;
+                if (!status.isShown() || node == null) { status.postDelayed(this, 15000); return; }
+                MailBeacon.inspect(node, phrase, MailBeacon.DISCOVERY, (card, block, error) -> {
+                    if (!status.isAttachedToWindow() || !key.equals(myId)) return;
+                    if (error != null) status.setText("Could not verify beacon: " + error);
+                    else if (card != null && key.equals(card.key)) {
+                        status.setText(block > 0 ? "Beacon live · block " + block : "Beacon live on this node");
+                    } else if (card != null) status.setText("Address conflict");
+                    else if (AddressRenewal.enabled(MainActivity.this, key)) {
+                        String progress = AddressRenewal.prefs(MainActivity.this).getString("status-" + key, "Publication scheduled");
+                        if (MailBeacon.FRESH_STATUS.equals(progress)) progress = "Waiting for renewal";
+                        status.setText("Beacon not yet visible · " + progress);
+                    } else status.setText("Publication off · no visible beacon");
+                    status.postDelayed(this, 15000);
+                });
+            }
+            public void onViewAttachedToWindow(View v) { v.post(this); }
+            public void onViewDetachedFromWindow(View v) { v.removeCallbacks(this); }
+        }
+        status.addOnAttachStateChangeListener(new Check());
     }
 
     private void changePublication(MailAddress.Card card) {

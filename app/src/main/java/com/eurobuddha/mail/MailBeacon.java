@@ -17,17 +17,23 @@ final class MailBeacon {
     interface Found { void done(MailAddress.Card card, String error); }
 
     static void find(NodeApi node, String phrase, int depth, Found cb) {
+        inspect(node, phrase, depth, (card, block, error) -> cb.done(card, error));
+    }
+
+    interface Observation { void done(MailAddress.Card card, long block, String error); }
+    static void inspect(NodeApi node, String phrase, int depth, Observation cb) {
         if (!phrase.equals(MailAddress.normalize(phrase))) throw new IllegalArgumentException("Invalid address");
         String tag = MailAddress.tag(phrase);
         node.cmd("coins address:" + ADDRESS + " tokenid:0x00 state:" + tag
                 + " simplestate:true order:desc depth:" + depth, new NodeApi.Cb() {
-            public void onError(String error) { cb.done(null, error); }
+            public void onError(String error) { cb.done(null, 0, error); }
             public void onResult(JSONObject j) {
                 JSONArray rows = j.optJSONArray("response");
                 if (!j.optBoolean("status") || rows == null) {
                     onError("Could not read address beacons from Core."); return;
                 }
                 MailAddress.Card found = null;
+                long newestBlock = 0;
                 for (int i = 0; i < rows.length(); i++) {
                     JSONObject coin = rows.optJSONObject(i);
                     if (coin == null || !ADDRESS.equalsIgnoreCase(coin.optString("address"))
@@ -42,8 +48,9 @@ final class MailBeacon {
                         onError("Multiple keys match this address. Ask for a contact link."); return;
                     }
                     found = card;
+                    newestBlock = Math.max(newestBlock, coin.optLong("created", 0));
                 }
-                cb.done(found, null);
+                cb.done(found, newestBlock, null);
             }
         });
     }
