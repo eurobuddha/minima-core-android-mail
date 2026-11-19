@@ -177,6 +177,10 @@ public class PublicAddressTest {
 
     @Test public void currencyPickerKeepsMxUsdVisibleAndUsesItsExactTokenAndSpendableBalance() throws Exception {
         org.json.JSONArray balances = new org.json.JSONArray();
+        org.json.JSONObject metadata = new org.json.JSONObject().put("name", "MxUSD")
+                .put("description", "unrelated token").put("image", "data:image/png;base64,AAAA");
+        balances.put(new org.json.JSONObject().put("tokenid", "0x" + KEY.substring(2, 66))
+                .put("sendable", "100").put("token", metadata.toString()));
         balances.put(new org.json.JSONObject().put("tokenid", "0x00").put("confirmed", "9"));
         assertEquals("0", PaymentCurrency.options(balances).get(1)[2]);
         balances.put(new org.json.JSONObject().put("tokenid", PaymentCurrency.MXUSD.toLowerCase(java.util.Locale.ROOT))
@@ -184,6 +188,9 @@ public class PublicAddressTest {
         try (ActivityScenario<MainActivity> screen = ActivityScenario.launch(MainActivity.class)) {
             screen.onActivity(a -> {
                 PaymentCurrency picker = new PaymentCurrency(a, PaymentCurrency.options(balances));
+                assertEquals(2, picker.getChildCount());
+                assertEquals("Minima  ·  9", ((android.widget.RadioButton) picker.getChildAt(0)).getText().toString());
+                assertEquals("MxUSD  ·  0.001", ((android.widget.RadioButton) picker.getChildAt(1)).getText().toString());
                 assertEquals("0x00", picker.selected()[0]);
                 picker.getChildAt(1).performClick();
                 assertArrayEquals(new String[]{PaymentCurrency.MXUSD, "MxUSD", "0.001"}, picker.selected());
