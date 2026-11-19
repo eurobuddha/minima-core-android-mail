@@ -39,6 +39,17 @@ final class MailAddress {
     }
     static List<String> dictionary() { return words; }
     static boolean isKey(String s) { return s != null && KEY.matcher(s).matches(); }
+    static String canonicalKey(String value) {
+        if (value == null || !value.matches("(?i)(?:0x)?[a-f0-9]{128}")) return null;
+        return (value.length() == 128 ? "0x" + value : value).toLowerCase(Locale.ROOT);
+    }
+
+    static boolean lookupReady(String input) {
+        int bar = input.indexOf('|');
+        return canonicalKey(bar < 0 ? input : input.substring(0, bar).trim()) != null
+                || input.contains("minimamail:") || normalize(input) != null;
+    }
+
     static String normalize(String s) {
         if (s == null || s.length() > 100) return null;
         String[] parts = s.trim().toLowerCase(Locale.ROOT).split("[\\s-]+", -1);

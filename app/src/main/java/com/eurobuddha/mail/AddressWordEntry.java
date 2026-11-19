@@ -71,7 +71,51 @@ final class AddressWordEntry {
     private final HorizontalScrollView suggScroll;
     private final TextView count;
 
+    private Runnable changed;
+    private java.util.function.Consumer<String> pastedKey;
     private boolean mute;
+
+    /** In compose the six public word boxes are the primary recipient control. */
+    void bindRecipient(EditText raw, TextView toggle, CharSequence keyLabel, CharSequence wordsLabel) {
+        Runnable showKey = () -> {
+            view.setVisibility(View.GONE);
+            raw.setVisibility(View.VISIBLE);
+            toggle.setText(wordsLabel);
+        };
+        Runnable showWords = () -> {
+            raw.setVisibility(View.GONE);
+            view.setVisibility(View.VISIBLE);
+            toggle.setText(keyLabel);
+            String words = phrase();
+            raw.setText(words == null ? "" : MailAddress.normalize(words));
+        };
+        changed = () -> {
+            if (view.getVisibility() == View.VISIBLE) {
+                String words = phrase();
+                raw.setText(words == null ? "" : MailAddress.normalize(words));
+            }
+        };
+        pastedKey = text -> { showKey.run(); raw.setText(text); raw.requestFocus(); };
+        raw.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            public void afterTextChanged(Editable s) {
+                if (view.getVisibility() == View.VISIBLE && s.length() > 0
+                        && !s.toString().equals(MailAddress.normalize(phrase()))) showKey.run();
+            }
+        });
+        toggle.setOnClickListener(v -> {
+            if (view.getVisibility() == View.VISIBLE) {
+                showKey.run();
+                raw.requestFocus();
+                raw.selectAll();
+            } else {
+                showWords.run();
+                boxes.get(Math.max(0, firstProblem() - 1)).requestFocus();
+            }
+        });
+        if (raw.length() == 0) showWords.run(); else showKey.run();
+    }
     /** After an auto-complete: the rest of that word, swallowed if it is typed straight on into the next box (review M3:
      *  "acco" completed ACCOUNT and the typed "unt" became UNTIL). */
     private String tail = "";
@@ -149,10 +193,15 @@ final class AddressWordEntry {
     private void onEdit(int idx) {
         EditText e = boxes.get(idx);
         String raw = e.getText().toString();
+        if (pastedKey != null && (raw.contains("://") || raw.contains("|") || raw.matches("(?i)(?:0x)?[0-9a-f]{128}"))) {
+            set(e, ""); prevLens.set(idx, 0); style(idx); refresh();
+            pastedKey.accept(raw.trim());
+            return;
+        }
         List<String> pasted = splitPasted(raw);
         // Pasted words (or a typed space): spread them over this box and the ones after it.
         if (pasted.size() > 1) { spread(idx, pasted); return; }
-        if (idx == tailBox && !tail.isEmpty() && System.currentTimeMillis() < tailUntil) {
+        if (changed == null && idx == tailBox && !tail.isEmpty() && System.currentTimeMillis() < tailUntil) {
             String typed = letters(raw);
             if (!typed.isEmpty() && tail.startsWith(typed)) {   // still typing the word that just completed: drop it
                 tail = tail.substring(typed.length()); tailUntil = System.currentTimeMillis() + 1500;
@@ -169,7 +218,7 @@ final class AddressWordEntry {
         List<String> m = matches(v, 2);
         // A word is certain once only one matches (4 letters always suffice). Only while TYPING: completing on a
         // backspace would make a finished word impossible to edit.
-        if (grew && m.size() == 1) {
+        if (grew && m.size() == 1 && (changed == null || v.length() >= 4 || v.equals(m.get(0)))) {
             String w = m.get(0);
             tail = w.substring(Math.min(v.length(), w.length()));
             tailBox = commit(idx, w); tailUntil = System.currentTimeMillis() + 1500;
@@ -183,7 +232,7 @@ final class AddressWordEntry {
     private void spread(int idx, List<String> words) {
         int start = words.size() >= WORDS ? 0 : idx;
         if (start + words.size() > WORDS) {
-            set(boxes.get(idx), ""); prevLens.set(idx, 0); style(idx);
+            set(boxes.get(idx), ""); prevLens.set(idx, 0); style(idx); refresh();
             count.setText(words.size() + " words pasted, but " + (start == 0 ? WORDS : WORDS - idx) + " fit"
                     + (start == 0 ? "" : " from box " + (idx + 1)) + ". Nothing was filled in: paste exactly six address words.");
             count.setTextColor(RED);
@@ -239,6 +288,7 @@ final class AddressWordEntry {
         int ok = 0; for (EditText e : boxes) if (isWord(e.getText().toString())) ok++;
         count.setText(ok == WORDS ? "All six words entered" : ok + " of six words");
         count.setTextColor(ok == WORDS ? GREEN : textColor);
+        if (changed != null) changed.run();
     }
 
     private Button button(String text, View.OnClickListener l) {

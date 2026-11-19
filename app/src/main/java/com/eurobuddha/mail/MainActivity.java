@@ -561,7 +561,9 @@ public class MainActivity extends AppCompatActivity {
         shared = shared.trim();
         if (shared.contains("minimamail:")) {
             String key = MailAddress.directKey(shared);
-            return key == null ? "" : key;
+            if (key != null) return key;
+            MailAddress.Card card = MailAddress.link(shared);
+            return card == null ? "" : card.key;
         }
         int bar = shared.indexOf('|');
         if (bar > 0) {
@@ -1230,7 +1232,8 @@ public class MainActivity extends AppCompatActivity {
 
     // ---- COMPOSE ----
 
-    private View buildCompose(String prefillKey, String prefillSubject) {
+    @androidx.annotation.VisibleForTesting
+    View buildCompose(String prefillKey, String prefillSubject) {
         LinearLayout col = column();
 
         // top bar: close + title + Send
@@ -1273,9 +1276,14 @@ public class MainActivity extends AppCompatActivity {
         toRow.addView(fieldChip(R.drawable.ic_contacts, null, v -> pickContact(to)));
         if (prefillKey != null) to.setText(prefillKey);
         col.addView(toRow);
-        TextView enterWords = textButton("Enter address words");
-        enterWords.setOnClickListener(v -> enterAddressWords(to));
-        col.addView(enterWords);
+        AddressWordEntry words = new AddressWordEntry(this, Design.TEXT);
+        words.view.setPadding(dp(16), 0, dp(12), 0);
+        col.addView(words.view);
+        TextView toggle = textButton("Mail key");
+        col.addView(toggle);
+        words.bindRecipient(to, toggle, "Paste link or Mail key", "Enter address words");
+        TextView addressStatus = label("");
+        col.addView(addressStatus);
         col.addView(hairline());
 
         // Subject
@@ -1305,14 +1313,7 @@ public class MainActivity extends AppCompatActivity {
         attachRow.setOrientation(LinearLayout.HORIZONTAL);
         attachRow.setPadding(dp(14), dp(10), dp(14), dp(10));
         LinearLayout photo = attachChip(R.drawable.ic_photo, "Photo");
-        photo.setOnClickListener(v -> resolveRecipient(to, k -> {
-            imagePickContact = k; imagePickSubject = subject.getText().toString().trim();
-            imagePicker.launch("image/*");
-        }));
         LinearLayout funds = attachChip(R.drawable.ic_coin, "Send funds");
-        funds.setOnClickListener(v -> resolveRecipient(to, k -> {
-            showSendFundsSheet(k, subject.getText().toString().trim());
-        }));
         attachRow.addView(photo);
         View gap = new View(this);
         attachRow.addView(gap, new LinearLayout.LayoutParams(dp(10), 1));
@@ -1333,12 +1334,59 @@ public class MainActivity extends AppCompatActivity {
         hint.addView(ht, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         col.addView(hint);
 
-        sendBtn.setOnClickListener(v -> resolveRecipient(to, k -> {
+        class RecipientCheck implements android.text.TextWatcher {
+            String key;
+            long revision;
+            void check() {
+                long request = ++revision;
+                key = null;
+                ready(false);
+                addressStatus.setOnClickListener(null);
+                String input = to.getText().toString().trim();
+                if (!MailAddress.lookupReady(input)) {
+                    addressStatus.setText("");
+                    addressStatus.setVisibility(View.GONE);
+                    return;
+                }
+                addressStatus.setVisibility(View.VISIBLE);
+                addressStatus.setText("Looking up address…");
+                resolveRecipient(input, result -> {
+                    if (request != revision) return;
+                    key = result;
+                    addressStatus.setText("Recipient ready");
+                    ready(true);
+                }, error -> {
+                    if (request != revision) return;
+                    addressStatus.setText(error + " · " + "Tap to retry");
+                    addressStatus.setOnClickListener(v -> check());
+                });
+            }
+            void ready(boolean yes) {
+                for (View action : new View[]{sendBtn, photo, funds}) {
+                    action.setEnabled(yes);
+                    action.setAlpha(yes ? 1f : 0.45f);
+                }
+            }
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            public void afterTextChanged(android.text.Editable s) { check(); }
+        }
+        RecipientCheck recipient = new RecipientCheck();
+        to.addTextChangedListener(recipient);
+        recipient.check();
+        photo.setOnClickListener(v -> {
+            imagePickContact = recipient.key; imagePickSubject = subject.getText().toString().trim();
+            imagePicker.launch("image/*");
+        });
+        funds.setOnClickListener(v -> showSendFundsSheet(recipient.key, subject.getText().toString().trim()));
+        sendBtn.setOnClickListener(v -> {
+            String k = recipient.key;
+            if (k == null) return;
             String subj = subject.getText().toString().trim();
             String text = body.getText().toString();
             if (text.trim().isEmpty()) { toast("Write a message first."); return; }
             doSend(sendBtn, k, subj, text, () -> { pop(); openConversation(k, subj); });
-        }));
+        });
 
         return col;
     }
@@ -2271,28 +2319,42 @@ public class MainActivity extends AppCompatActivity {
 
     private void resolveRecipient(EditText field, java.util.function.Consumer<String> use) {
         String typed = field.getText().toString();
-        String key = acceptKeyShare(typed);
-        if (MailAddress.isKey(key)) { use.accept(key); return; }
-        // Older Mail clients also accepted bare 128-digit keys.
-        if (key.matches("[0-9a-fA-F]{128}")) { use.accept(key); return; }
+        resolveRecipient(typed, key -> {
+            if (field.isAttachedToWindow() && typed.equals(field.getText().toString())) use.accept(key);
+        }, error -> {
+            if (field.isAttachedToWindow() && typed.equals(field.getText().toString())) field.setError(error);
+        });
+    }
+
+    private void resolveRecipient(String typed, java.util.function.Consumer<String> use,
+                                  java.util.function.Consumer<CharSequence> fail) {
+        String key = MailAddress.canonicalKey(acceptKeyShare(typed));
+        if (key != null) { use.accept(key); return; }
         String phrase = MailAddress.normalize(typed);
-        if (phrase == null) { field.setError("Enter six address words, a contact link or a Mail key."); return; }
-        String local = null;
-        for (String[] contact : db.contacts()) {
-            String id = contact[2];
-            if (!MailAddress.isKey(id) || !MailAddress.phrase(id).equals(phrase)) continue;
-            if (local != null && !local.equalsIgnoreCase(id)) { field.setError("Ambiguous address. Ask for a contact link."); return; }
-            local = id;
-        }
-        if (local != null) { use.accept(local); return; }
-        if (field.getTag() != null) return;
-        field.setTag(typed);
-        toast("Looking up address…");
+        if (phrase == null) { fail.accept("Enter six address words, a contact link or a Mail key."); return; }
+        String own = myId;
+        io.execute(() -> {
+            java.util.Set<String> matches = new java.util.HashSet<>();
+            List<String> keys = db.knownMailKeys();
+            keys.add(own);
+            for (String candidate : keys) {
+                String id = MailAddress.canonicalKey(candidate);
+                if (id != null && MailAddress.phrase(id).equals(phrase)) matches.add(id);
+            }
+            ui.post(() -> {
+                if (isFinishing() || isDestroyed() || !java.util.Objects.equals(own, myId)) return;
+                if (matches.size() > 1) { fail.accept("Ambiguous address. Ask for a contact link."); return; }
+                if (!matches.isEmpty()) { use.accept(matches.iterator().next()); return; }
+                findPublishedRecipient(phrase, use, fail);
+            });
+        });
+    }
+
+    private void findPublishedRecipient(String phrase, java.util.function.Consumer<String> use,
+                                        java.util.function.Consumer<CharSequence> fail) {
         MailBeacon.find(node, phrase, MailBeacon.DISCOVERY, (card, error) -> {
-            field.setTag(null);
-            if (!field.isAttachedToWindow() || !typed.equals(field.getText().toString())) return;
             if (error != null || card == null) {
-                field.setError(error == null ? "Address isn’t currently discoverable. Ask for a contact link." : error);
+                fail.accept(error == null ? "No published address found on this node. Ask the recipient to publish their address or share their contact link." : error);
                 return;
             }
             db.setMeta("card:" + card.key, card.link());

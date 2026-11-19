@@ -170,6 +170,17 @@ public class CommsDb extends SQLiteOpenHelper {
         return out;
     }
 
+    /** Unsaved correspondents can be resolved from the public keys on existing messages. */
+    public List<String> knownMailKeys() {
+        List<String> keys = new ArrayList<>();
+        String sql = "SELECT publickey FROM " + CON + " UNION SELECT frompublickey FROM " + MSG
+                + " UNION SELECT topublickey FROM " + MSG;
+        try (Cursor c = getReadableDatabase().rawQuery(sql, null)) {
+            while (c.moveToNext()) keys.add(c.getString(0));
+        }
+        return keys;
+    }
+
     /** Contact name for a publickey, or null. */
     public String contactName(String publickey) {
         Cursor c = getReadableDatabase().rawQuery("SELECT username FROM " + CON + " WHERE publickey=?", new String[]{publickey});

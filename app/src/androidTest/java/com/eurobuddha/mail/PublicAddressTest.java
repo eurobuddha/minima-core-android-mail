@@ -61,6 +61,61 @@ public class PublicAddressTest {
             });
         }
     }
+    @Test public void composeCompletesSixPrefixesAndResolvesBeforeSend() throws Exception {
+        CommsIdentity id = CommsIdentity.fromSeed(Sodium.get(), "test-fixture-only-mail-address-A".getBytes(StandardCharsets.UTF_8));
+        java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(1);
+        android.widget.LinearLayout[] current = new android.widget.LinearLayout[1];
+        try (ActivityScenario<MainActivity> screen = ActivityScenario.launch(MainActivity.class)) {
+            screen.onActivity(activity -> {
+                activity.adoptIdentity(id);
+                android.widget.LinearLayout form = (android.widget.LinearLayout) activity.buildCompose(null, null);
+                activity.setContentView(form);
+                current[0] = form;
+                android.widget.TextView status = (android.widget.TextView) form.getChildAt(4);
+                status.addTextChangedListener(new android.text.TextWatcher() {
+                    public void beforeTextChanged(CharSequence s, int st, int n, int after) {}
+                    public void onTextChanged(CharSequence s, int st, int before, int count) {
+                        if ("Recipient ready".contentEquals(s)) ready.countDown();
+                    }
+                    public void afterTextChanged(android.text.Editable s) {}
+                });
+                android.widget.LinearLayout header = (android.widget.LinearLayout) form.getChildAt(0);
+                View send = header.getChildAt(header.getChildCount() - 1);
+                android.widget.LinearLayout words = (android.widget.LinearLayout) form.getChildAt(2);
+                android.widget.LinearLayout grid = (android.widget.LinearLayout) words.getChildAt(0);
+                android.widget.EditText box = null;
+                int i = 0;
+                for (String word : WORDS.split("-")) {
+                    assertFalse(send.isEnabled());
+                    box = (android.widget.EditText) ((android.widget.LinearLayout) grid.getChildAt(i / 3)).getChildAt(i % 3);
+                    if (i == 0) box.requestFocus();
+                    assertTrue("focus on word " + (i + 1), box.hasFocus());
+                    for (char letter : word.substring(0, 4).toCharArray()) box.append(String.valueOf(letter));
+                    assertEquals(word, box.getText().toString());
+                    i++;
+                }
+            });
+            assertTrue("sixth word resolves before Send", ready.await(30, java.util.concurrent.TimeUnit.SECONDS));
+            screen.onActivity(activity -> {
+                android.widget.LinearLayout form = current[0];
+                android.widget.LinearLayout header = (android.widget.LinearLayout) form.getChildAt(0);
+                View send = header.getChildAt(header.getChildCount() - 1);
+                android.widget.LinearLayout grid = (android.widget.LinearLayout) ((android.widget.LinearLayout) form.getChildAt(2)).getChildAt(0);
+                android.widget.EditText box = (android.widget.EditText) ((android.widget.LinearLayout) grid.getChildAt(1)).getChildAt(2);
+                assertTrue(send.isEnabled());
+                assertEquals("Recipient ready", ((android.widget.TextView) form.getChildAt(4)).getText().toString());
+                box.setText("bub");
+                assertFalse(send.isEnabled());
+                ((android.widget.TextView) form.getChildAt(3)).performClick();
+                android.widget.EditText raw = (android.widget.EditText) ((android.widget.LinearLayout) form.getChildAt(1)).getChildAt(1);
+                raw.setText(MailAddress.directLink(KEY));
+                assertTrue(send.isEnabled());
+                raw.setText("");
+                assertFalse(send.isEnabled());
+            });
+        }
+    }
+
     @Test public void completePasteFillsExactlySixPublicBoxes() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             Context c = InstrumentationRegistry.getInstrumentation().getTargetContext();
