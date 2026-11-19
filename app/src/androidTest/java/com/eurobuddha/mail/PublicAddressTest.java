@@ -61,6 +61,61 @@ public class PublicAddressTest {
             });
         }
     }
+    private static android.widget.TextView visibleText(View root, String text) {
+        java.util.ArrayList<View> matches = new java.util.ArrayList<>();
+        root.findViewsWithText(matches, text, View.FIND_VIEWS_WITH_TEXT);
+        for (View v : matches) {
+            if (v.isShown() && v instanceof android.widget.TextView
+                    && text.contentEquals(((android.widget.TextView) v).getText())) return (android.widget.TextView) v;
+        }
+        return null;
+    }
+
+    @Test public void tappingInboxOpensJustThatMessageWithSmallSixWordSender() throws Exception {
+        assertEquals(WORDS, MailAddress.display(KEY.substring(2)));
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String thread = java.util.UUID.randomUUID().toString();
+        try (com.eurobuddha.comms.CommsDb store = new com.eurobuddha.comms.CommsDb(context)) {
+            com.eurobuddha.comms.MailMessage m = new com.eurobuddha.comms.MailMessage();
+            m.hashref = thread; m.incoming = true; m.frompublickey = KEY;
+            m.subject = ""; m.message = "earlier"; m.randomid = "first"; m.date = System.currentTimeMillis();
+            long first = store.insert(m);
+            m.message = "yo"; m.randomid = "second"; m.date++;
+            long second = store.insert(m);
+            try (ActivityScenario<MainActivity> screen = ActivityScenario.launch(MainActivity.class)) {
+                boolean[] clicked = {false};
+                for (int i = 0; i < 100 && !clicked[0]; i++) {
+                    screen.onActivity(a -> {
+                        View root = a.findViewById(android.R.id.content);
+                        android.widget.TextView body = visibleText(root, "yo");
+                        if (body == null) return;
+                        android.widget.TextView sender = visibleText(root, WORDS);
+                        assertNotNull(sender);
+                        assertTrue(body.getTextSize() > sender.getTextSize());
+                        assertEquals(1, sender.getMaxLines());
+                        View row = body;
+                        while (!row.isClickable()) row = (View) row.getParent();
+                        clicked[0] = row.performClick();
+                    });
+                    if (!clicked[0]) Thread.sleep(50);
+                }
+                assertTrue("tapped the inbox row", clicked[0]);
+                for (int i = 0; i < 100 && !store.message(second).read; i++) Thread.sleep(50);
+                assertTrue(store.message(second).read);
+                assertFalse(store.message(first).read);
+                screen.onActivity(a -> {
+                    View root = a.findViewById(android.R.id.content);
+                    android.widget.TextView body = visibleText(root, "yo"), sender = visibleText(root, WORDS);
+                    assertNotNull(body); assertTrue(body.isTextSelectable());
+                    assertNotNull(sender); assertEquals(1, sender.getMaxLines());
+                    assertTrue(body.getTextSize() > sender.getTextSize());
+                    assertNotNull(visibleText(root, "Reply"));
+                    assertNull(visibleText(root, KEY));
+                });
+            } finally { store.deleteThread(thread); }
+        }
+    }
+
     @Test public void composeCompletesSixPrefixesAndResolvesBeforeSend() throws Exception {
         CommsIdentity id = CommsIdentity.fromSeed(Sodium.get(), "test-fixture-only-mail-address-A".getBytes(StandardCharsets.UTF_8));
         java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(1);

@@ -44,6 +44,11 @@ final class MailAddress {
         return (value.length() == 128 ? "0x" + value : value).toLowerCase(Locale.ROOT);
     }
 
+    static String display(String value) {
+        String key = canonicalKey(value);
+        return key == null ? value : phrase(key);
+    }
+
     static boolean lookupReady(String input) {
         int bar = input.indexOf('|');
         return canonicalKey(bar < 0 ? input : input.substring(0, bar).trim()) != null

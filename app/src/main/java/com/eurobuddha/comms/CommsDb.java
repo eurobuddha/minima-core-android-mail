@@ -112,6 +112,11 @@ public class CommsDb extends SQLiteOpenHelper {
         try { return c.moveToFirst() ? c.getInt(0) : 0; } finally { c.close(); }
     }
 
+    public void markMessageRead(long id) {
+        ContentValues values = new ContentValues(); values.put("read", 1);
+        getWritableDatabase().update(MSG, values, "id=? AND incoming=1", new String[]{String.valueOf(id)});
+    }
+
     public void markThreadRead(String hashref) {
         ContentValues v = new ContentValues(); v.put("read", 1);
         getWritableDatabase().update(MSG, v, "hashref=?", new String[]{hashref});

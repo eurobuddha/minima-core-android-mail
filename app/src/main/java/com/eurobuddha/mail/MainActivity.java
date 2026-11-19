@@ -746,7 +746,7 @@ public class MainActivity extends AppCompatActivity {
 
         @Override public void onBindViewHolder(@NonNull RecyclerView.ViewHolder h, int pos) {
             MailMessage t = data.get(pos);
-            String other = myId != null && myId.equals(t.frompublickey) ? t.topublickey : t.frompublickey;
+            String other = t.incoming ? t.frompublickey : t.topublickey;
             String name = nameFor(other);
             boolean unread = t.incoming && !t.read;
 
@@ -769,10 +769,10 @@ public class MainActivity extends AppCompatActivity {
             l1.setOrientation(LinearLayout.HORIZONTAL);
             TextView nm = new TextView(MainActivity.this);
             nm.setText(name);
-            nm.setTextColor(unread ? Design.TEXT : Design.DIM);
-            nm.setTextSize(14.5f);
-            nm.setTypeface(unread ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-            if (!name.equals(other)) nm.setMaxLines(1);   // a raw key (unnamed sender) wraps in full
+            nm.setTextColor(Design.DIM);
+            nm.setTextSize(11f);
+            nm.setTypeface(Typeface.DEFAULT);
+            nm.setSingleLine(true); nm.setEllipsize(android.text.TextUtils.TruncateAt.END);
             nm.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             TextView time = new TextView(MainActivity.this);
             time.setText(rel(t.date)); time.setTextColor(Design.DIM); time.setTextSize(11f);
@@ -788,10 +788,11 @@ public class MainActivity extends AppCompatActivity {
 
             TextView snip = new TextView(MainActivity.this);
             snip.setText((t.incoming ? "" : "You: ") + previewText(t));
-            snip.setTextColor(Design.DIM);
-            snip.setTextSize(11.5f); snip.setMaxLines(1);
+            snip.setTextColor(Design.TEXT);
+            snip.setTextSize(16f); snip.setMaxLines(2);
 
-            mid.addView(l1); mid.addView(subj); mid.addView(snip);
+            if (!noSubject) mid.addView(subj);
+            mid.addView(snip); mid.addView(l1);
             row.addView(mid);
 
             if (unread) {
@@ -803,7 +804,7 @@ public class MainActivity extends AppCompatActivity {
             wrap.addView(row);
             wrap.addView(hairline());
 
-            wrap.setOnClickListener(v -> openConversation(t));
+            wrap.setOnClickListener(v -> openMessage(t));
             wrap.setOnLongClickListener(v -> { showThreadActions(t, archivedView); return true; });
         }
 
@@ -859,7 +860,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void showThreadActions(MailMessage t, final boolean archivedView) {
         final String hashref = t.hashref;
-        final String other = myId != null && myId.equals(t.frompublickey) ? t.topublickey : t.frompublickey;
+        final String other = t.incoming ? t.frompublickey : t.topublickey;
         String[] items = {archivedView ? "Unarchive" : "Archive", "Copy key", "Delete"};
         new AlertDialog.Builder(this).setItems(items, (d, w) -> {
             if (w == 0) {
@@ -876,9 +877,52 @@ public class MainActivity extends AppCompatActivity {
         }).show();
     }
 
-    private void openConversation(MailMessage thread) {
-        String other = myId != null && myId.equals(thread.frompublickey) ? thread.topublickey : thread.frompublickey;
-        openConversation(other, thread.subject == null ? "" : thread.subject);
+    private void openMessage(MailMessage selected) {
+        View origin = stack.peek();
+        io.execute(() -> {
+            MailMessage message = db.message(selected.id);
+            ui.post(() -> {
+                if (stack.peek() != origin || isDestroyed() || isFinishing() || message == null) return;
+                push(buildMessageReader(message));
+                if (message.incoming && !message.read) io.execute(() -> db.markMessageRead(message.id));
+            });
+        });
+    }
+
+    View buildMessageReader(MailMessage message) {
+        String peer = message.incoming ? message.frompublickey : message.topublickey;
+        String subject = message.subject == null ? "" : message.subject;
+        String address = MailAddress.display(peer);
+        LinearLayout page = column();
+        page.addView(header(subject.isEmpty() ? "(no subject)" : subject, true));
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout content = column();
+        content.setPadding(dp(18), dp(16), dp(18), dp(16));
+        if ("image".equals(message.type) && message.image != null && !message.image.isEmpty()) {
+            content.addView(imageBubble(message));
+        } else if ("payment".equals(message.type)) {
+            content.addView(paymentBubble(message));
+        } else {
+            TextView body = new TextView(this);
+            body.setText(message.message);
+            body.setTextSize(19f); body.setTextColor(Design.TEXT);
+            body.setTextIsSelectable(true);
+            content.addView(body);
+        }
+        TextView sender = new TextView(this);
+        CharSequence name = nameFor(peer);
+        sender.setText(name.toString().equals(address) ? name : name + " · " + address);
+        sender.setTextColor(Design.DIM); sender.setTextSize(11f);
+        sender.setPadding(0, dp(12), 0, dp(8));
+        sender.setSingleLine(true); sender.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        sender.setOnClickListener(v -> { copy(address, "Mail address"); toast("Address copied."); });
+        content.addView(sender);
+        scroll.addView(content);
+        page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        TextView reply = textButton("Reply");
+        reply.setOnClickListener(v -> openConversation(peer, subject));
+        page.addView(reply);
+        return page;
     }
 
     private void openConversation(final String otherKey, final String subject) {
@@ -945,7 +989,7 @@ public class MainActivity extends AppCompatActivity {
                 cell.addView(statusLine(m, outboxView));
                 wrap.addView(cell);
                 wrap.addView(hairline());
-                wrap.setOnClickListener(v -> openConversation(m.topublickey, m.subject == null ? "" : m.subject));
+                wrap.setOnClickListener(v -> openMessage(m));
             }
 
             @Override public int getItemCount() { return data.size(); }
@@ -1031,17 +1075,17 @@ public class MainActivity extends AppCompatActivity {
         tcol.setPadding(dp(10), 0, 0, 0);
         tcol.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         String otherName = nameFor(otherKey);
-        boolean unnamed = otherName.equals(otherKey);
+        String address = MailAddress.display(otherKey);
+        boolean unnamed = otherName.equals(address);
         TextView nm = new TextView(this);
-        // unnamed + no subject: the full key is shown (and copyable) in `sub` below — don't clip it here too
         nm.setText(subject.isEmpty() ? (unnamed ? "Conversation" : otherName) : subject);
         nm.setTextColor(Design.TEXT); nm.setTextSize(15f); nm.setTypeface(Typeface.DEFAULT_BOLD);
         nm.setMaxLines(1);
         TextView sub = new TextView(this);
-        sub.setText(subject.isEmpty() || unnamed ? otherKey : otherName + " · " + otherKey);
+        sub.setText(subject.isEmpty() || unnamed ? address : otherName + " · " + address);
         sub.setTextColor(Design.DIM); sub.setTextSize(10.5f); sub.setTypeface(Typeface.MONOSPACE);
-        sub.setContentDescription("Mail key, tap to copy");
-        sub.setOnClickListener(v -> { copy(otherKey, "Mail key"); toast("Key copied."); });
+        sub.setSingleLine(true); sub.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        sub.setOnClickListener(v -> { copy(address, "Mail address"); toast("Address copied."); });
         tcol.addView(nm); tcol.addView(sub);
         head.addView(tcol);
         head.addView(iconBtn(R.drawable.ic_dots, v -> conversationMenu(v, otherKey, hashref)));
@@ -2566,7 +2610,7 @@ public class MainActivity extends AppCompatActivity {
             contactNames = m;
         }
         String n = contactNames.get(key);
-        return n != null ? n : key;
+        return n != null && !n.trim().isEmpty() && !n.equalsIgnoreCase(key) ? n : MailAddress.display(key);
     }
 
     private String previewText(MailMessage t) {
