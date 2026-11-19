@@ -107,7 +107,6 @@ public class MainActivity extends AppCompatActivity {
     private boolean modalOpen = false;   // suppress background screen rebuilds while a dialog is open
     private int chainBlock = 0;
     private final java.util.HashMap<String, Runnable> pendingPay = new java.util.HashMap<>();
-    private final java.util.HashSet<String> payaddrAsked = new java.util.HashSet<>();
     private java.util.Map<String, String> contactNames;   // cached publickey→name (avoids a DB query per list row)
     private final android.util.LruCache<String, Bitmap> imgCache = new android.util.LruCache<String, Bitmap>(12 * 1024 * 1024) {
         @Override protected int sizeOf(String key, Bitmap b) { return b.getByteCount(); }
@@ -304,7 +303,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void showTop() {
-        currentMessages = null;
+        if (currentMessages != null && !java.util.Objects.equals(stack.peek().getTag(), convHashref)) {
+            currentMessages = null; convAdapter = null; convHashref = null;
+        }
         container.removeAllViews();
         container.addView(stack.peek());
     }
@@ -541,14 +542,6 @@ public class MainActivity extends AppCompatActivity {
             }
         });
         fetchMyPayaddr();   // cache my receiving address NOW, so every message I send carries it
-    }
-
-    /** Fire a one-time address request to a contact we don't have an address for yet (so it's ready by pay time). */
-    private void proactivePayaddr(String otherKey) {
-        if (crypto == null || otherKey == null) return;
-        if (db.contactPayaddr(otherKey) != null) return;
-        if (!payaddrAsked.add(otherKey)) return;   // at most once per contact per session (avoid coin spam)
-        sendPayaddrReq(otherKey);
     }
 
     /** What I share as my "Mail key": encryption key + my Mx receiving address, so contacts can pay me. */
@@ -805,7 +798,7 @@ public class MainActivity extends AppCompatActivity {
             wrap.addView(row);
             wrap.addView(hairline());
 
-            wrap.setOnClickListener(v -> openMessage(t));
+            wrap.setOnClickListener(v -> openConversation(t));
             wrap.setOnLongClickListener(v -> { showThreadActions(t, archivedView); return true; });
         }
 
@@ -878,59 +871,9 @@ public class MainActivity extends AppCompatActivity {
         }).show();
     }
 
-    private void openMessage(MailMessage selected) {
-        View origin = stack.peek();
-        io.execute(() -> {
-            MailMessage message = db.message(selected.id);
-            ui.post(() -> {
-                if (stack.peek() != origin || isDestroyed() || isFinishing() || message == null) return;
-                push(buildMessageReader(message));
-                if (message.incoming && !message.read) io.execute(() -> db.markMessageRead(message.id));
-            });
-        });
-    }
-
-    View buildMessageReader(MailMessage message) {
+    private void openConversation(MailMessage message) {
         String peer = message.incoming ? message.frompublickey : message.topublickey;
-        String subject = message.subject == null ? "" : message.subject;
-        String address = MailAddress.display(peer);
-        LinearLayout page = column();
-        page.addView(header(subject.isEmpty() ? "(no subject)" : subject, true));
-        ScrollView scroll = new ScrollView(this);
-        LinearLayout content = column();
-        content.setPadding(dp(18), dp(16), dp(18), dp(16));
-        if ("image".equals(message.type) && message.image != null && !message.image.isEmpty()) {
-            content.addView(imageBubble(message));
-        } else if ("payment".equals(message.type)) {
-            content.addView(paymentBubble(message));
-        } else {
-            TextView body = new TextView(this);
-            body.setText(message.message);
-            body.setTextSize(19f); body.setTextColor(Design.TEXT);
-            body.setTextIsSelectable(true);
-            content.addView(body);
-        }
-        TextView sender = new TextView(this);
-        CharSequence name = nameFor(peer);
-        sender.setText(name.toString().equals(address) ? name : name + " · " + address);
-        sender.setTextColor(Design.DIM); sender.setTextSize(11f);
-        sender.setPadding(0, dp(12), 0, dp(8));
-        sender.setSingleLine(true); sender.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        sender.setOnClickListener(v -> { copy(address, "Mail address"); toast("Address copied."); });
-        content.addView(sender);
-        scroll.addView(content);
-        page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
-        TextView reply = textButton("Reply");
-        reply.setOnClickListener(v -> openConversation(peer, subject));
-        page.addView(reply);
-        return page;
-    }
-
-    private void openConversation(final String otherKey, final String subject) {
-        io.execute(() -> {
-            db.markThreadRead(MailText.threadKey(myId, otherKey, subject == null ? "" : subject));
-            ui.post(() -> push(buildConversation(otherKey, subject == null ? "" : subject)));
-        });
+        push(buildConversation(peer, message.subject == null ? "" : message.subject, message.hashref));
     }
 
     // ---- OUTBOX / SENT (per-message status lists) ----
@@ -990,7 +933,7 @@ public class MainActivity extends AppCompatActivity {
                 cell.addView(statusLine(m, outboxView));
                 wrap.addView(cell);
                 wrap.addView(hairline());
-                wrap.setOnClickListener(v -> openMessage(m));
+                wrap.setOnClickListener(v -> openConversation(m));
             }
 
             @Override public int getItemCount() { return data.size(); }
@@ -1057,11 +1000,9 @@ public class MainActivity extends AppCompatActivity {
 
     // ---- CONVERSATION (bubbles kept) ----
 
-    private View buildConversation(final String otherKey, final String subject) {
-        final String hashref = MailText.threadKey(myId == null ? "" : myId, otherKey, subject);
+    private View buildConversation(final String otherKey, final String subject, final String hashref) {
         LinearLayout col = column();
         col.setTag(hashref);
-        proactivePayaddr(otherKey);   // request their receiving address now, so it's ready when you pay
 
         // top bar: back + avatar + subject/name
         LinearLayout head = new LinearLayout(this);
@@ -1105,6 +1046,7 @@ public class MainActivity extends AppCompatActivity {
         currentMessages = rv;
         convAdapter = adapter; convHashref = hashref;   // enable in-place updates (no screen rebuild)
         io.execute(() -> {                              // load messages off the UI thread
+            db.markThreadRead(hashref);
             final List<MailMessage> msgs = db.thread(hashref);
             ui.post(() -> { adapter.setData(msgs); if (!msgs.isEmpty()) rv.scrollToPosition(msgs.size() - 1); });
         });
@@ -1154,6 +1096,7 @@ public class MainActivity extends AppCompatActivity {
         });
         bar.addView(send);
         col.addView(bar);
+        box.requestFocus();
         return col;
     }
 
@@ -1450,7 +1393,7 @@ public class MainActivity extends AppCompatActivity {
             String subj = subject.getText().toString().trim();
             String text = body.getText().toString();
             if (text.trim().isEmpty()) { toast("Write a message first."); return; }
-            doSend(sendBtn, k, subj, text, () -> { pop(); openConversation(k, subj); });
+            doSend(sendBtn, k, subj, text, () -> { pop(); push(buildConversation(k, subj, MailText.threadKey(myId, k, subj))); });
         });
 
         return col;
@@ -1540,7 +1483,9 @@ public class MainActivity extends AppCompatActivity {
                 mid.setPadding(dp(12), 0, 0, 0);
                 mid.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
                 TextView nm = new TextView(MainActivity.this); nm.setText(name); nm.setTextColor(Design.TEXT); nm.setTextSize(15f); nm.setTypeface(Typeface.DEFAULT_BOLD);
-                TextView kv = new TextView(MainActivity.this); kv.setText(key); kv.setTextColor(Design.DIM); kv.setTextSize(12f); kv.setTypeface(Typeface.MONOSPACE);
+                final String address = MailAddress.display(key);
+                TextView kv = new TextView(MainActivity.this); kv.setText(address); kv.setTextColor(Design.DIM); kv.setTextSize(12f); kv.setTypeface(Typeface.MONOSPACE);
+                kv.setOnClickListener(v -> { copy(address, "Mail address"); toast("Address copied."); });
                 mid.addView(nm); mid.addView(kv); row.addView(mid);
                 row.setOnClickListener(v -> push(buildCompose(key, null)));
                 row.setOnLongClickListener(v -> {
@@ -1890,22 +1835,13 @@ public class MainActivity extends AppCompatActivity {
     private void showSendFundsSheet(final String otherKey, final String subject) {
         if (crypto == null) { toast("Connect to your node first."); return; }
         final String known = db.contactPayaddr(otherKey);
-        if (known == null) sendPayaddrReq(otherKey);   // try to auto-fetch their address in the background
+        if (known == null) sendPayaddrReq(otherKey);
         loadTokens(tokens -> {
             if (tokens.isEmpty()) { toast("No funds available to send."); return; }
             LinearLayout box = pad(column());
-            final String[] sel = {tokens.get(0)[0], tokens.get(0)[1], tokens.get(0)[2]};   // tokenid, name, balance
             box.addView(label("Token"));
-            final TextView tokenBtn = accentOutlineButton(sel[1] + "   ·   balance " + sel[2]);
-            tokenBtn.setOnClickListener(v -> {
-                String[] labels = new String[tokens.size()];
-                for (int i = 0; i < tokens.size(); i++) labels[i] = tokens.get(i)[1] + " — " + tokens.get(i)[2];
-                new AlertDialog.Builder(this).setTitle("Choose token").setItems(labels, (d, w) -> {
-                    sel[0] = tokens.get(w)[0]; sel[1] = tokens.get(w)[1]; sel[2] = tokens.get(w)[2];
-                    tokenBtn.setText(sel[1] + "   ·   balance " + sel[2]);
-                }).show();
-            });
-            box.addView(tokenBtn);
+            PaymentCurrency currency = new PaymentCurrency(this, tokens);
+            box.addView(currency);
             box.addView(label("Amount"));
             final EditText amt = input("0.0");
             amt.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
@@ -1933,8 +1869,11 @@ public class MainActivity extends AppCompatActivity {
             box.addView(memo);
             ScrollView sv = new ScrollView(this); sv.addView(box);
             AlertDialog dlg = new AlertDialog.Builder(this).setTitle("Send funds to " + nameFor(otherKey)).setView(sv)
-                    .setPositiveButton("Review", (d, w) ->
-                            trySendFunds(otherKey, subject, sel[0], sel[1], sel[2], amt.getText().toString().trim(), addr.getText().toString().trim(), memo.getText().toString()))
+                    .setPositiveButton("Review", (d, w) -> {
+                        String[] sel = currency.selected();
+                        if (sel != null) trySendFunds(otherKey, subject, sel[0], sel[1], sel[2],
+                                amt.getText().toString().trim(), addr.getText().toString().trim(), memo.getText().toString());
+                    })
                     .setNegativeButton("Cancel", null).create();
             dlg.setOnDismissListener(d -> { modalOpen = false; openPayAddrField = null; openPayContact = null; });
             modalOpen = true;
@@ -2191,22 +2130,9 @@ public class MainActivity extends AppCompatActivity {
     private void loadTokens(final java.util.function.Consumer<List<String[]>> cb) {
         node.cmd("balance", new NodeApi.Cb() {
             @Override public void onResult(JSONObject j) {
-                List<String[]> out = new ArrayList<>();
-                org.json.JSONArray arr = j.optJSONArray("response");
-                if (arr != null) for (int i = 0; i < arr.length(); i++) {
-                    JSONObject t = arr.optJSONObject(i);
-                    if (t == null) continue;
-                    String tid = t.optString("tokenid", "0x00");
-                    String conf = t.optString("confirmed", "0");
-                    try { if (new java.math.BigDecimal(conf).signum() <= 0) continue; } catch (Exception e) { continue; }
-                    String name;
-                    Object tok = t.opt("token");
-                    if (tok instanceof JSONObject) name = ((JSONObject) tok).optString("name", tid);
-                    else name = (tok == null) ? tid : tok.toString();
-                    if ("0x00".equals(tid)) name = "Minima";
-                    out.add(new String[]{tid, name, conf});
-                }
-                cb.accept(out);
+                org.json.JSONArray balances = j.optJSONArray("response");
+                cb.accept(j.optBoolean("status", false) && balances != null
+                        ? PaymentCurrency.options(balances) : new ArrayList<>());
             }
             @Override public void onError(String m) { cb.accept(new ArrayList<>()); }
         });

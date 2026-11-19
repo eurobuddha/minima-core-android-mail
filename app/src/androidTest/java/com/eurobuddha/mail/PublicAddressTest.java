@@ -93,7 +93,7 @@ public class PublicAddressTest {
         return null;
     }
 
-    @Test public void tappingInboxOpensJustThatMessageWithSmallSixWordSender() throws Exception {
+    @Test public void tappingLatestReplyOpensSavedThreadWithOriginalAndComposer() throws Exception {
         assertEquals(WORDS, MailAddress.display(KEY.substring(2)));
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         String thread = java.util.UUID.randomUUID().toString();
@@ -102,6 +102,7 @@ public class PublicAddressTest {
             m.hashref = thread; m.incoming = true; m.frompublickey = KEY;
             m.subject = ""; m.message = "earlier"; m.randomid = "first"; m.date = System.currentTimeMillis();
             long first = store.insert(m);
+            m.incoming = false; m.topublickey = KEY; m.frompublickey = "";
             m.message = "yo"; m.randomid = "second"; m.date++;
             long second = store.insert(m);
             try (ActivityScenario<MainActivity> screen = ActivityScenario.launch(MainActivity.class)) {
@@ -109,7 +110,7 @@ public class PublicAddressTest {
                 for (int i = 0; i < 100 && !clicked[0]; i++) {
                     screen.onActivity(a -> {
                         View root = a.findViewById(android.R.id.content);
-                        android.widget.TextView body = visibleText(root, "yo");
+                        android.widget.TextView body = visibleText(root, "You: yo");
                         if (body == null) return;
                         android.widget.TextView sender = visibleText(root, WORDS);
                         assertNotNull(sender);
@@ -124,17 +125,71 @@ public class PublicAddressTest {
                 assertTrue("tapped the inbox row", clicked[0]);
                 for (int i = 0; i < 100 && !store.message(second).read; i++) Thread.sleep(50);
                 assertTrue(store.message(second).read);
-                assertFalse(store.message(first).read);
+                assertTrue(store.message(first).read);
+                InstrumentationRegistry.getInstrumentation().waitForIdleSync();
                 screen.onActivity(a -> {
                     View root = a.findViewById(android.R.id.content);
                     android.widget.TextView body = visibleText(root, "yo"), sender = visibleText(root, WORDS);
                     assertNotNull(body); assertTrue(body.isTextSelectable());
                     assertNotNull(sender); assertEquals(1, sender.getMaxLines());
                     assertTrue(body.getTextSize() > sender.getTextSize());
-                    assertNotNull(visibleText(root, "Reply"));
+                    assertNotNull(visibleText(root, "earlier"));
+                    View focused = a.getCurrentFocus();
+                    assertTrue(focused instanceof android.widget.EditText);
+                    assertEquals("Reply", ((android.widget.EditText) focused).getHint().toString());
                     assertNull(visibleText(root, KEY));
                 });
             } finally { store.deleteThread(thread); }
+        }
+    }
+
+    @Test public void savedContactDisplaysAndCopiesItsSixWords() {
+        Context ctx = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String key = KEY.substring(2).toUpperCase(java.util.Locale.ROOT);
+        try (com.eurobuddha.comms.CommsDb store = new com.eurobuddha.comms.CommsDb(ctx)) {
+            assertNull(store.contactName(key));
+            assertTrue(store.addContact("Address fixture", key));
+            try (ActivityScenario<MainActivity> screen = ActivityScenario.launch(MainActivity.class)) {
+                screen.onActivity(a -> {
+                    android.view.ViewGroup content = a.findViewById(android.R.id.content);
+                    DrawerLayout drawer = (DrawerLayout) content.getChildAt(0);
+                    drawer.openDrawer(androidx.core.view.GravityCompat.START, false);
+                    View item = visibleText(drawer, "Contacts");
+                    assertNotNull(item);
+                    while (!item.isClickable()) item = (View) item.getParent();
+                    item.performClick();
+                });
+                InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+                screen.onActivity(a -> {
+                    View root = a.findViewById(android.R.id.content);
+                    assertNotNull(visibleText(root, "Address fixture"));
+                    android.widget.TextView address = visibleText(root, WORDS);
+                    assertNotNull(address); assertNull(visibleText(root, key));
+                    assertTrue(address.performClick());
+                    android.content.ClipboardManager clip = a.getSystemService(android.content.ClipboardManager.class);
+                    assertEquals(WORDS, clip.getPrimaryClip().getItemAt(0).getText().toString());
+                });
+            } finally {
+                for (String[] c : store.contacts()) if (c[2].equals(key)) store.deleteContact(Long.parseLong(c[0]));
+            }
+        }
+    }
+
+    @Test public void currencyPickerKeepsMxUsdVisibleAndUsesItsExactTokenAndSpendableBalance() throws Exception {
+        org.json.JSONArray balances = new org.json.JSONArray();
+        balances.put(new org.json.JSONObject().put("tokenid", "0x00").put("confirmed", "9"));
+        assertEquals("0", PaymentCurrency.options(balances).get(1)[2]);
+        balances.put(new org.json.JSONObject().put("tokenid", PaymentCurrency.MXUSD.toLowerCase(java.util.Locale.ROOT))
+                .put("confirmed", "3").put("sendable", "0.001"));
+        try (ActivityScenario<MainActivity> screen = ActivityScenario.launch(MainActivity.class)) {
+            screen.onActivity(a -> {
+                PaymentCurrency picker = new PaymentCurrency(a, PaymentCurrency.options(balances));
+                assertEquals("0x00", picker.selected()[0]);
+                picker.getChildAt(1).performClick();
+                assertArrayEquals(new String[]{PaymentCurrency.MXUSD, "MxUSD", "0.001"}, picker.selected());
+                picker.clearCheck();
+                assertNull(picker.selected());
+            });
         }
     }
 
